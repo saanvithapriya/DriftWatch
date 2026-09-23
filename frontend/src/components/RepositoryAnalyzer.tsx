@@ -2,21 +2,13 @@ import { useState, type FormEvent } from "react";
 import { analyzeGithubRepository } from "../services/api";
 import type { RepositoryTree } from "../types/github";
 import { isLikelyGithubRepositoryUrl } from "../utils/githubUrl";
+import { buildFileTree } from "../utils/fileTree";
 import { FileTree } from "./FileTree";
+import { RepositoryDiagram } from "./RepositoryDiagram";
+import { RepositorySummary } from "./RepositorySummary";
+import type { TreeNode } from "../utils/mermaid";
 
 type Status = "idle" | "loading" | "success" | "error";
-
-function countNodes(tree: RepositoryTree): { files: number; directories: number } {
-  let files = 0;
-  let directories = 0;
-
-  for (const node of tree.tree) {
-    if (node.type === "file") files += 1;
-    else directories += 1;
-  }
-
-  return { files, directories };
-}
 
 export function RepositoryAnalyzer() {
   const [url, setUrl] = useState("");
@@ -29,7 +21,6 @@ export function RepositoryAnalyzer() {
 
     const trimmed = url.trim();
 
-    // Basic client-side checks only; the backend validates authoritatively.
     if (trimmed === "") {
       setStatus("error");
       setResult(null);
@@ -64,53 +55,150 @@ export function RepositoryAnalyzer() {
     }
   }
 
-  const counts = result === null ? null : countNodes(result);
+  // TODO: Replace buildFileTree(result.tree) with the real hierarchical
+  // TreeNode[] once the tree-processing workstream provides it.
+  const diagramTree: TreeNode[] | null =
+    result === null ? null : (buildFileTree(result.tree) as TreeNode[]);
+
+  const isLoading = status === "loading";
+  const hasError = status === "error" && error !== null;
 
   return (
-    <section>
-      <h2>Analyze GitHub Repository</h2>
+    <div className="analyzer-layout">
 
-      <form onSubmit={handleSubmit}>
-        <label htmlFor="repository-url">Repository URL</label>{" "}
-        <input
-          id="repository-url"
-          type="text"
-          value={url}
-          placeholder="https://github.com/owner/repository"
-          size={40}
-          onChange={(event) => setUrl(event.target.value)}
-        />{" "}
-        <button type="submit" disabled={status === "loading"}>
-          {status === "loading" ? "Analyzing..." : "Analyze Repository"}
-        </button>
-      </form>
-
-      {status === "loading" && <p>Fetching repository...</p>}
-
-      {status === "error" && error !== null && (
-        <p role="alert">{error}</p>
-      )}
-
-      {status === "success" && result !== null && counts !== null && (
-        <div>
-          <h3>
-            Repository: {result.repository.owner}/{result.repository.name}
-          </h3>
-          <p>Default branch: {result.repository.defaultBranch}</p>
-          <p>
-            Files: {counts.files} &middot; Directories: {counts.directories}
+      {/* ── Analyzer card ── */}
+      <section className="card analyzer-card" aria-label="Repository analyzer">
+        <div className="card-header">
+          <h2 className="card-title">Analyze GitHub Repository</h2>
+          <p className="card-desc">
+            Enter a public GitHub repository URL to analyze its structure.
           </p>
+        </div>
 
-          {result.truncated && (
-            <p role="alert">
-              This repository is too large for GitHub to return in one
-              response, so the tree below is incomplete.
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="form-group">
+            <label className="label" htmlFor="repository-url">
+              Repository URL
+            </label>
+            <div className="analyzer-form-row">
+              <input
+                id="repository-url"
+                type="url"
+                className={`input analyzer-input${hasError ? " has-error" : ""}`}
+                value={url}
+                placeholder="https://github.com/owner/repository"
+                onChange={(e) => setUrl(e.target.value)}
+                disabled={isLoading}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="submit"
+                className="btn btn-primary analyzer-btn"
+                disabled={isLoading}
+              >
+                {isLoading && <span className="spinner" aria-hidden="true" />}
+                {isLoading ? "Analyzing…" : "Analyze Repository"}
+              </button>
+            </div>
+            <p className="form-hint">
+              Public repositories only · No authentication required
             </p>
-          )}
+          </div>
+        </form>
 
-          <FileTree nodes={result.tree} />
+        {/* Error state */}
+        {hasError && (
+          <div className="alert alert-error analyzer-error" role="alert">
+            <span aria-hidden="true">⚠</span>
+            <div>
+              <strong className="alert-title">Unable to analyze repository</strong>
+              <span className="alert-body">{error}</span>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ── Loading state ── */}
+      {isLoading && (
+        <div className="analyzer-loading" aria-live="polite" aria-busy="true">
+          <span className="spinner spinner--large" aria-hidden="true" />
+          <p className="analyzer-loading__text">Analyzing repository…</p>
         </div>
       )}
-    </section>
+
+      {/* ── Success states ── */}
+      {status === "success" && result !== null && (
+        <>
+          {/* Repository summary */}
+          <RepositorySummary result={result} />
+
+          {/* Mermaid visualization */}
+          <section className="analyzer-section" aria-label="Repository structure diagram">
+            <div className="analyzer-section__header">
+              <h3 className="analyzer-section__title">Repository Structure</h3>
+              <p className="analyzer-section__desc">
+                Visual representation of the repository's file and folder structure.
+              </p>
+            </div>
+            <div className="card diagram-card">
+              <RepositoryDiagram tree={diagramTree} status={status} />
+            </div>
+          </section>
+
+          {/* File tree */}
+          <section className="analyzer-section" aria-label="Repository files">
+            <div className="analyzer-section__header">
+              <h3 className="analyzer-section__title">Repository Files</h3>
+              <p className="analyzer-section__desc">
+                Explore the file and folder structure.
+              </p>
+            </div>
+            <div className="card filetree-card">
+              <FileTree nodes={result.tree} />
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* ── Empty states (shown when idle or error) ── */}
+      {(status === "idle" || status === "error") && (
+        <>
+          <section className="analyzer-section" aria-label="Repository structure diagram">
+            <div className="analyzer-section__header">
+              <h3 className="analyzer-section__title">Repository Structure</h3>
+              <p className="analyzer-section__desc">
+                Visual representation of the repository's file and folder structure.
+              </p>
+            </div>
+            <div className="card diagram-card diagram-card--empty">
+              <div className="empty-state">
+                <span className="empty-state__icon" aria-hidden="true">⬡</span>
+                <p className="empty-state__text">
+                  Analyze a GitHub repository to see its structure here.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section className="analyzer-section" aria-label="Repository files">
+            <div className="analyzer-section__header">
+              <h3 className="analyzer-section__title">Repository Files</h3>
+              <p className="analyzer-section__desc">
+                Explore the file and folder structure.
+              </p>
+            </div>
+            <div className="card filetree-card filetree-card--empty">
+              <div className="empty-state">
+                <span className="empty-state__icon" aria-hidden="true">📂</span>
+                <p className="empty-state__text">
+                  Your repository file tree will appear here after analysis.
+                </p>
+              </div>
+            </div>
+          </section>
+        </>
+      )}
+    </div>
   );
 }
