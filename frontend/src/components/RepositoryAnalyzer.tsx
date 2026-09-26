@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { analyzeGithubRepository } from "../services/api";
 import type { RepositoryTree } from "../types/github";
 import { isLikelyGithubRepositoryUrl } from "../utils/githubUrl";
-import { buildFileTree } from "../utils/fileTree";
+import { ROOT_PATH, buildFileTree, createRepositoryRoot } from "../utils/fileTree";
 import { FileTree } from "./FileTree";
 import { RepositoryDiagram } from "./RepositoryDiagram";
 import { RepositorySummary } from "./RepositorySummary";
@@ -18,6 +18,10 @@ export function RepositoryAnalyzer() {
   // Phase 1's file tree stays the default view; the diagram is opt-in, which
   // also means Mermaid does no work until the user asks for it.
   const [view, setView] = useState<View>("tree");
+  // Where the architecture view is currently pointing. The repository tree is
+  // never mutated by navigation — only this path changes, and the visible
+  // subtree is derived from it.
+  const [currentPath, setCurrentPath] = useState<string>(ROOT_PATH);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -47,6 +51,8 @@ export function RepositoryAnalyzer() {
     try {
       const data = await analyzeGithubRepository(trimmed);
       setResult(data);
+      // A new repository always starts at its own root.
+      setCurrentPath(ROOT_PATH);
       setStatus("success");
     } catch (caught) {
       setError(
@@ -58,20 +64,29 @@ export function RepositoryAnalyzer() {
     }
   }
 
-  // Memoized on `result`: this array is the `tree` prop of RepositoryDiagram,
-  // whose render effect keys on prop identity. Rebuilding it on every render
-  // would re-run the whole Mermaid render on each keystroke in the URL field.
-  const hierarchy = useMemo(
-    () => (result === null ? null : buildFileTree(result.tree)),
-    [result]
-  );
-
-  const isLoading = status === "loading";
-  const hasError = status === "error" && error !== null;
   const repositoryLabel =
     result === null
       ? ""
       : `${result.repository.owner}/${result.repository.name}`;
+
+  // Built once per analysis: the hierarchy, its size metadata, and the
+  // synthetic repository root that navigation starts from. Both views read
+  // from this same structure rather than keeping their own copy.
+  const root = useMemo(
+    () =>
+      result === null
+        ? null
+        : createRepositoryRoot(repositoryLabel, buildFileTree(result.tree)),
+    [result, repositoryLabel]
+  );
+
+  const isLoading = status === "loading";
+  const hasError = status === "error" && error !== null;
+
+  function openInDiagram(path: string): void {
+    setCurrentPath(path);
+    setView("diagram");
+  }
 
   return (
     <div className="analyzer-layout">
@@ -138,7 +153,7 @@ export function RepositoryAnalyzer() {
       )}
 
       {/* ── Success ── */}
-      {status === "success" && result !== null && hierarchy !== null && (
+      {status === "success" && result !== null && root !== null && (
         <>
           <RepositorySummary result={result} />
 
@@ -146,7 +161,8 @@ export function RepositoryAnalyzer() {
             <div className="analyzer-section__header">
               <h3 className="analyzer-section__title">Repository Structure</h3>
               <p className="analyzer-section__desc">
-                Browse the files, or view the structure as a diagram.
+                Browse every file, or explore the architecture by drilling into
+                directories.
               </p>
             </div>
 
@@ -171,7 +187,7 @@ export function RepositoryAnalyzer() {
                 className={`viewtabs__tab${view === "diagram" ? " is-active" : ""}`}
                 onClick={() => setView("diagram")}
               >
-                Diagram
+                Architecture
               </button>
             </div>
 
@@ -182,7 +198,7 @@ export function RepositoryAnalyzer() {
                 role="tabpanel"
                 aria-labelledby="tab-tree"
               >
-                <FileTree nodes={result.tree} />
+                <FileTree nodes={root.children} onOpenInDiagram={openInDiagram} />
               </div>
             ) : (
               <div
@@ -192,10 +208,9 @@ export function RepositoryAnalyzer() {
                 aria-labelledby="tab-diagram"
               >
                 <RepositoryDiagram
-                  // Remount per repository so diagram mode resets with it.
-                  key={repositoryLabel}
-                  tree={hierarchy}
-                  repositoryLabel={repositoryLabel}
+                  root={root}
+                  currentPath={currentPath}
+                  onNavigate={setCurrentPath}
                   truncated={result.truncated}
                 />
               </div>
@@ -210,7 +225,8 @@ export function RepositoryAnalyzer() {
           <div className="analyzer-section__header">
             <h3 className="analyzer-section__title">Repository Structure</h3>
             <p className="analyzer-section__desc">
-              Browse the files, or view the structure as a diagram.
+              Browse every file, or explore the architecture by drilling into
+              directories.
             </p>
           </div>
           <div className="card filetree-card filetree-card--empty">

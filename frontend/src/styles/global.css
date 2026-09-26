@@ -824,3 +824,125 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   outline: 2px solid var(--accent-ring);
   outline-offset: -2px;
 }
+
+/* ── Phase 2: architecture explorer ────────────────────────────────────── */
+
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.875rem;
+}
+
+.breadcrumb__part {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.breadcrumb__sep {
+  color: var(--text-muted);
+}
+
+.breadcrumb__crumb {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.breadcrumb__crumb:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.breadcrumb__crumb:disabled {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: default;
+}
+
+.diagram-toolbar__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.btn-ghost {
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.select {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.diagram-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+/* Directory nodes are drill-down targets. */
+.diagram-svg-wrapper .node {
+  cursor: pointer;
+}
+
+.ftree-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.ftree-open {
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast), color var(--t-fast);
+}
+
+.ftree-row:hover .ftree-open,
+.ftree-open:focus-visible {
+  opacity: 1;
+  color: var(--accent);
+}

@@ -17,8 +17,9 @@ This project will eventually provide GitHub repository analysis, architecture vi
 **Phase 1** added GitHub repository ingestion: a public repository URL in, a
 normalized file tree out. See below.
 
-**Phase 2** adds the repository visualizer: the ingested tree is rendered as a
-Mermaid `graph TD` diagram alongside the existing file tree.
+**Phase 2** adds the repository architecture explorer: the ingested tree is
+explored one directory at a time as a Mermaid `graph TD` diagram, alongside the
+complete file tree.
 
 Code intelligence, dependency analysis, private repositories, and persistence
 do not exist yet — those belong to later phases.
@@ -167,22 +168,45 @@ than presenting a partial tree as the whole repository.
 Errors always take the shape `{ "success": false, "message": "..." }`. Stack
 traces and raw Octokit errors are never returned to the client.
 
-## Phase 2 — Repository Visualizer
+## Phase 2 — Repository Architecture Explorer
 
-Phase 2 turns the flat path list from Phase 1 into a diagram. It is a purely
-deterministic frontend transformation — no new endpoint, no extra request.
+Phase 2 turns the flat path list from Phase 1 into something explorable. It is
+a purely deterministic frontend transformation — no new endpoint, and **no
+extra request for any navigation**.
+
+DriftWatch deliberately does **not** render the whole repository as one giant
+graph. Large repositories contain thousands of files, so the visualization uses
+hierarchical drill-down to keep diagrams readable and responsive:
 
 ```text
-GitHub repository
-      ↓
-Recursive file tree          (Phase 1: POST /api/github/tree)
-      ↓
-Hierarchical tree            (buildFileTree)
-      ↓
-Mermaid graph TD             (generateMermaidDiagram)
-      ↓
-Repository structure visualization
+Repository
+    ↓
+High-level architecture      (top-level directories + root files)
+    ↓
+Directory drill-down         (click a directory)
+    ↓
+Deeper directory
+    ↓
+File tree for detailed inspection
 ```
+
+### Why drill-down instead of one big diagram
+
+Mermaid lays a graph out synchronously on the main thread, so an oversized
+diagram does not merely render slowly — it freezes the tab. Measured in
+Chromium on this project:
+
+| Nodes | Render time |
+| --- | --- |
+| 100 | ~3.4s |
+| 300 | ~15.3s |
+| 500 | ~32.8s |
+| 700 | never completes — Mermaid gives up |
+
+Drawing one level at a time keeps every diagram far below that. `facebook/react`
+(7,893 nodes) and `chromium/chromium` (57,053 nodes) both produce a root
+diagram in well under half a second, because only their top-level entries are
+drawn.
 
 ### Structure only — not a dependency graph
 
@@ -193,91 +217,109 @@ Phase 2:  "What files and directories exist?"
 Phase 4:  "How does the code depend on and call other code?"
 ```
 
-The diagram shows the file/folder hierarchy. It says nothing about imports,
-call graphs, or any relationship between the contents of two files. That
-analysis belongs to a later phase.
+The diagram shows the file/folder hierarchy. It says nothing about imports or
+call graphs; that analysis belongs to a later phase.
 
-### How the diagram is built
+### The two views
+
+**File Tree** (the default) holds the *complete* repository, with collapsible
+directories. It is never reduced.
+
+**Architecture** shows one directory at a time:
+
+- The repository root shows top-level directories **and** root-level files
+  (`package.json`, `README.md`, …) — root files are never hidden.
+- Clicking a directory node drills into it and draws only *its* children.
+- **Breadcrumbs** (`react/react / src / components`) jump to any ancestor.
+- **↑ Up** goes one level up, and is disabled at the repository root.
+- **Show files** (off by default) adds file children to the current level.
+- **Depth** 1 or 2 draws one extra level when a quick overview helps.
+
+Every directory node carries its size, so a directory's scale is visible
+without opening it:
+
+```text
+📁 src
+2 dirs · 5 files
+```
+
+Those counts are descendant totals, computed once when the hierarchy is built
+rather than recalculated on each render.
+
+### State and navigation
+
+The repository tree is built once per analysis and never mutated. Navigation
+changes only a `currentPath` string; the visible subtree is derived from it.
+That makes navigation reversible and keeps stale state impossible — analyzing a
+different repository resets the path to its root, and a path that no longer
+exists falls back to the root rather than rendering nothing.
+
+Because the whole tree is already in memory, **drilling down, breadcrumbs, Up,
+and the toggles issue no network requests at all**. One analysis is exactly one
+`POST /api/github/tree`.
+
+### Generating a diagram
 
 `buildFileTree` converts the flat `{ path, type }` list into a hierarchical
-`TreeNode[]`, creating any intermediate directories GitHub did not list and
-ordering siblings directories-first then alphabetically, so the output is
-deterministic.
+`TreeNode[]` with size metadata, creating any intermediate directories GitHub
+did not list and ordering siblings directories-first then alphabetically, so
+output is deterministic. `createRepositoryRoot` wraps that forest in a node
+standing for the repository itself.
 
-`generateMermaidDiagram` then walks that tree and emits a `graph TD` rooted at
-a node for the repository itself:
+`generateMermaidDiagram(node, options)` is pure — it knows nothing about React
+or HTTP — and emits a `graph TD` rooted at the selected directory:
 
 ```text
 graph TD
-  root(["octocat/Hello-World"])
-  node_1("📁 src")
+  root(["src<br/>2 dirs · 5 files"])
+  node_1("📁 components<br/>0 dirs · 2 files")
   root --> node_1
   node_2["📄 App.tsx"]
-  node_1 --> node_2
+  root --> node_2
 ```
 
 Node IDs are sequential (`node_1`, `node_2`, …) rather than derived from the
 path. Deriving an ID by replacing unsafe characters is not injective:
 `a-b.txt`, `a_b.txt` and `a.b.txt` all collapse onto the same ID, and files
-silently vanish from the diagram. Allocation follows the tree's deterministic
-order, so IDs stay stable between runs.
+silently vanish from the diagram. The generator also returns a map from node ID
+back to repository path, which is what makes nodes clickable.
 
 Labels are escaped with Mermaid entity codes (`#` first, then `&`, `"`, `<`,
 `>`), so filenames such as `[id]`, `a"b.ts` or `a<b>c.ts` render as written
 instead of breaking the syntax.
 
-### Large repositories
+### Safety guard
 
-Mermaid lays a graph out synchronously on the main thread, so an unbounded
-diagram does not just render slowly — it freezes the tab. Measured in Chromium
-on this project:
+Drawing one level at a time normally keeps diagrams small, but a single
+directory can still hold hundreds of entries. `MAX_DIAGRAM_NODES` (150) caps
+this: above it, nothing is generated and the view explains the situation
+instead of freezing the browser.
 
-| Nodes | Render time |
-| --- | --- |
-| 100 | ~3.4s |
-| 300 | ~15.3s |
-| 500 | ~32.8s |
-| 700 | never completes — Mermaid gives up |
+```text
+This directory contains 200 items, too many to render as one diagram
+(the limit is 150). Use the File Tree, or select a subdirectory to
+explore further.
+```
 
-So `utils/diagramPlan.ts` picks the most detailed view that still fits:
+### Truncated, empty, and failed diagrams
 
-- **≤ 150 nodes** — rendered immediately.
-- **151–500 nodes** — rendered only after the user confirms, with the cost
-  stated up front.
-- **> 500 nodes** — the view is reduced: first to directories only, then by
-  capping depth, until it fits. The UI says which reduction was applied.
+When Phase 1 reports `truncated: true`, the architecture view carries an
+explicit warning that some files may be missing, so a partial tree is never
+presented as the complete repository. Navigation still works over whatever
+arrived.
 
-A **Directories only** toggle is available for any repository. The File Tree
-view is never reduced and always shows the complete structure.
-
-### Truncated and empty repositories
-
-When Phase 1 reports `truncated: true`, the diagram view carries an explicit
-warning that it may not contain every file, so a partial tree is never
-presented as complete. An empty repository shows
-`Repository has no files to visualize.` rather than an invalid diagram.
-
-If Mermaid fails to parse or render, the page does not crash: the user sees
-`Unable to render repository diagram.` and the real error is logged to the
-console for debugging.
+An empty repository shows `This repository has no files to visualize.` rather
+than an invalid diagram. If Mermaid fails to render, the page stays alive: the
+user sees `Unable to render this diagram.` with a suggestion to try a smaller
+directory, and the real error goes to the console.
 
 ## Frontend
 
 The home page provides a repository URL field and an **Analyze Repository**
 button. It shows a loading state while fetching, reports errors inline, and on
 success displays the repository name, default branch, and file and directory
-counts.
+counts, followed by the two views described above.
 
-Below that, a view switch selects how to explore the structure:
-
-```text
-[ File Tree ] [ Diagram ]
-```
-
-**File Tree** (the default) is the Phase 1 collapsible tree: top-level entries
-are expanded and nested directories start collapsed, so large repositories stay
-responsive. **Diagram** is the Phase 2 Mermaid visualization. Mermaid does no
-work until the Diagram tab is selected.
 
 ## Testing
 
@@ -287,5 +329,11 @@ Frontend unit tests are plain TypeScript with no test-framework dependency:
 npm test --workspace=frontend
 ```
 
-This covers the tree builder, the Mermaid generator (including ID collisions,
-escaping and determinism), and the large-repository planner.
+This covers the tree builder and its size metadata, the Mermaid generator
+(including ID collisions, escaping, the max-node guard and determinism), and
+architecture-view navigation. The backend has its own suite for URL parsing and
+GitHub error mapping:
+
+```bash
+npm test --workspace=backend
+```

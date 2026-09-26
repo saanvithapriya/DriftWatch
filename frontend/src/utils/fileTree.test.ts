@@ -5,7 +5,12 @@
  */
 import type { RepositoryTreeNode } from "../types/github";
 import type { TreeNode } from "../types/tree";
-import { buildFileTree, countTreeNodes } from "./fileTree";
+import {
+  ROOT_PATH,
+  buildFileTree,
+  countTreeNodes,
+  createRepositoryRoot,
+} from "./fileTree";
 import { assert, assertEqual, report, test } from "./testHarness";
 
 const file = (path: string): RepositoryTreeNode => ({ path, type: "file" });
@@ -171,6 +176,86 @@ test("countTreeNodes counts files and directories at every depth", () => {
 
 test("countTreeNodes on an empty tree is all zeroes", () => {
   assertEqual(countTreeNodes([]), { files: 0, directories: 0, total: 0 }, "zeroes");
+});
+
+test("metadata: direct counts describe only immediate children", () => {
+  const tree = buildFileTree([
+    file("src/App.tsx"),
+    file("src/main.tsx"),
+    file("src/components/Header.tsx"),
+    dir("src/pages"),
+  ]);
+  const src = tree[0];
+  assertEqual(src.name, "src", "src is the root entry");
+  assertEqual(src.counts.directFiles, 2, "App.tsx and main.tsx");
+  assertEqual(src.counts.directDirectories, 2, "components and pages");
+});
+
+test("metadata: descendant counts cover the whole subtree", () => {
+  const tree = buildFileTree([
+    file("src/App.tsx"),
+    file("src/components/Header.tsx"),
+    file("src/components/deep/Nested.tsx"),
+    dir("src/pages"),
+  ]);
+  const src = tree[0];
+  assertEqual(src.counts.totalFiles, 3, "all files at any depth");
+  assertEqual(src.counts.totalDirectories, 3, "components, components/deep, pages");
+});
+
+test("metadata: files carry zeroed counts", () => {
+  const tree = buildFileTree([file("README.md")]);
+  assertEqual(
+    tree[0].counts,
+    { directFiles: 0, directDirectories: 0, totalFiles: 0, totalDirectories: 0 },
+    "file counts are zero"
+  );
+});
+
+test("metadata: an empty directory reports zeroes", () => {
+  const tree = buildFileTree([dir("empty")]);
+  assertEqual(tree[0].counts.totalFiles, 0, "no files");
+  assertEqual(tree[0].counts.totalDirectories, 0, "no subdirectories");
+});
+
+test("metadata is computed once at build time, not on access", () => {
+  const tree = buildFileTree([file("a/b/c.txt")]);
+  const first = JSON.stringify(tree[0].counts);
+  const second = JSON.stringify(tree[0].counts);
+  assertEqual(first, second, "counts are stable values, not recomputed");
+});
+
+test("createRepositoryRoot wraps the forest in a labelled root", () => {
+  const root = createRepositoryRoot(
+    "octocat/Hello-World",
+    buildFileTree([file("README.md"), file("src/App.tsx")])
+  );
+  assertEqual(root.path, ROOT_PATH, "root path is empty");
+  assertEqual(root.name, "octocat/Hello-World", "labelled with the repository");
+  assertEqual(root.type, "directory", "root behaves as a directory");
+  assertEqual(root.children.length, 2, "src and README.md");
+});
+
+test("the repository root aggregates counts across every top-level entry", () => {
+  const root = createRepositoryRoot(
+    "owner/repo",
+    buildFileTree([
+      file("README.md"),
+      file("src/App.tsx"),
+      file("src/components/Header.tsx"),
+      file("backend/services/api.ts"),
+    ])
+  );
+  assertEqual(root.counts.totalFiles, 4, "every file in the repository");
+  assertEqual(root.counts.totalDirectories, 4, "src, src/components, backend, backend/services");
+  assertEqual(root.counts.directFiles, 1, "only README.md sits at the top level");
+  assertEqual(root.counts.directDirectories, 2, "src and backend");
+});
+
+test("an empty repository root is valid and reports zeroes", () => {
+  const root = createRepositoryRoot("owner/repo", buildFileTree([]));
+  assertEqual(root.children.length, 0, "no children");
+  assertEqual(root.counts.totalFiles, 0, "no files");
 });
 
 report("buildFileTree() / countTreeNodes() tests");

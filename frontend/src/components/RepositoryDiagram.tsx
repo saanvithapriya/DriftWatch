@@ -1,16 +1,22 @@
 /**
- * Phase 2: renders a repository's file/folder structure as a Mermaid diagram.
+ * Phase 2: the repository architecture explorer.
  *
- * All Mermaid *generation* lives in `utils/mermaid.ts` and all sizing policy
- * in `utils/diagramPlan.ts`; this component owns initialisation, rendering
- * and the surrounding UI states only.
+ * Rather than drawing the whole repository as one graph, this shows one
+ * directory at a time and lets the user drill down. All navigation is local:
+ * it re-reads the already-fetched tree and never issues a request.
+ *
+ * Diagram *generation* lives in `utils/mermaid.ts`; this component owns
+ * Mermaid initialisation, rendering, and the surrounding UI.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mermaid from "mermaid";
 import type { TreeNode } from "../types/tree";
-import { countTreeNodes } from "../utils/fileTree";
-import { planDiagram, type DiagramMode } from "../utils/diagramPlan";
-import { generateMermaidDiagram } from "../utils/mermaid";
+import { ROOT_PATH, findNodeByPath, parentPath, pathSegments } from "../utils/fileTree";
+import {
+  MAX_DIAGRAM_NODES,
+  describeDirectory,
+  generateMermaidDiagram,
+} from "../utils/mermaid";
 
 let mermaidInitialised = false;
 
@@ -22,9 +28,8 @@ function ensureMermaidInitialised(): void {
     // "strict" sanitises the rendered SVG. Labels come from repository
     // filenames, i.e. untrusted input, so it stays on.
     securityLevel: "strict",
-    // useMaxWidth would scale a wide graph down to the card width, which
-    // makes large diagrams unreadable. Keep the natural size and let the
-    // wrapper scroll instead.
+    // useMaxWidth would scale a wide graph down to the card width, which makes
+    // diagrams unreadable. Keep the natural size and let the wrapper scroll.
     flowchart: { htmlLabels: false, useMaxWidth: false },
   });
   mermaidInitialised = true;
@@ -38,59 +43,59 @@ type DiagramState =
   | { kind: "error" };
 
 interface RepositoryDiagramProps {
-  tree: TreeNode[];
-  /** Label for the diagram's root node, e.g. `facebook/react`. */
-  repositoryLabel: string;
+  /** The synthetic node representing the repository. */
+  root: TreeNode;
+  /** Currently selected directory path ("" is the repository root). */
+  currentPath: string;
+  onNavigate: (path: string) => void;
   /** True when GitHub truncated the tree this diagram was built from. */
   truncated: boolean;
 }
 
 export function RepositoryDiagram({
-  tree,
-  repositoryLabel,
+  root,
+  currentPath,
+  onNavigate,
   truncated,
 }: RepositoryDiagramProps) {
-  const counts = useMemo(() => countTreeNodes(tree), [tree]);
-
-  // Very large repositories open in directory-only mode, which is both more
-  // likely to fit and the more readable view at that size.
-  const [mode, setMode] = useState<DiagramMode>(() =>
-    planDiagram(tree, "all").tooLarge && counts.directories > 0
-      ? "directories"
-      : "all"
-  );
-  const [confirmed, setConfirmed] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
+  const [depth, setDepth] = useState<1 | 2>(1);
   const [state, setState] = useState<DiagramState>({ kind: "rendering" });
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const plan = useMemo(() => planDiagram(tree, mode), [tree, mode]);
+  // A path that no longer exists (after analyzing a different repository)
+  // falls back to the root instead of rendering nothing.
+  const current = useMemo(
+    () => findNodeByPath(root, currentPath) ?? root,
+    [root, currentPath]
+  );
 
-  const isEmpty = tree.length === 0;
-  const awaitingConfirmation = plan.needsConfirmation && !confirmed;
-  const shouldRender = !isEmpty && !plan.tooLarge && !awaitingConfirmation;
+  const diagram = useMemo(
+    () => generateMermaidDiagram(current, { showFiles, depth }),
+    [current, showFiles, depth]
+  );
+
+  const isEmptyRepository = root.children.length === 0;
 
   useEffect(() => {
-    if (!shouldRender) return;
+    if (isEmptyRepository || diagram.definition === null) return;
 
     let cancelled = false;
     setState({ kind: "rendering" });
 
-    const definition = generateMermaidDiagram(tree, {
-      repositoryLabel,
-      directoriesOnly: plan.directoriesOnly,
-      maxDepth: plan.maxDepth,
-    });
-
     ensureMermaidInitialised();
-    const id = `repository-diagram-${(diagramCounter += 1)}`;
+    diagramCounter += 1;
+    const id = `repository-diagram-${diagramCounter}`;
 
     mermaid
-      .render(id, definition)
+      .render(id, diagram.definition)
       .then(({ svg }) => {
         if (!cancelled) setState({ kind: "success", svg });
       })
       .catch((error: unknown) => {
         // The user gets a short message; the real error goes to the console
-        // so it can be debugged.
+        // so it can be debugged. A Mermaid failure must never propagate and
+        // unmount the application.
         console.error("Mermaid failed to render the repository diagram:", error);
         if (!cancelled) setState({ kind: "error" });
       });
@@ -98,56 +103,109 @@ export function RepositoryDiagram({
     return () => {
       cancelled = true;
     };
-  }, [
-    tree,
-    repositoryLabel,
-    plan.directoriesOnly,
-    plan.maxDepth,
-    shouldRender,
-  ]);
+  }, [diagram, isEmptyRepository]);
 
-  if (isEmpty) {
+  /**
+   * Mermaid gives each node an element id like `flowchart-node_3-7`, so the
+   * generator's id is recovered from the middle of that.
+   */
+  const handleDiagramClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const target = event.target as Element | null;
+      const nodeEl = target?.closest?.("[id]") as Element | null;
+      if (nodeEl === null || nodeEl === undefined) return;
+
+      const match = /(?:^|-)(node_\d+|root)(?:-\d+)?$/.exec(nodeEl.id);
+      const generatedId = match?.[1];
+      if (generatedId === undefined) return;
+
+      const path = diagram.pathsById.get(generatedId);
+      if (path === undefined || path === current.path) return;
+
+      const node = findNodeByPath(root, path);
+      if (node === null || node.type !== "directory") return;
+      onNavigate(path);
+    },
+    [diagram, current.path, root, onNavigate]
+  );
+
+  if (isEmptyRepository) {
     return (
       <div className="empty-state">
         <span className="empty-state__icon" aria-hidden="true">
           ⬡
         </span>
         <p className="empty-state__text">
-          Repository has no files to visualize.
+          This repository has no files to visualize.
         </p>
       </div>
     );
   }
 
-  function selectMode(next: DiagramMode): void {
-    setMode(next);
-    setConfirmed(false);
-  }
+  const segments = pathSegments(current.path);
+  const up = parentPath(current.path);
 
-  const modeSwitch = counts.directories > 0 && (
+  const breadcrumb = (
+    <nav className="breadcrumb" aria-label="Diagram location">
+      <button
+        type="button"
+        className="breadcrumb__crumb"
+        onClick={() => onNavigate(ROOT_PATH)}
+        disabled={current.path === ROOT_PATH}
+      >
+        {root.name}
+      </button>
+      {segments.map((segment, index) => (
+        <span key={segments.slice(0, index + 1).join("/")} className="breadcrumb__part">
+          <span className="breadcrumb__sep" aria-hidden="true">
+            /
+          </span>
+          <button
+            type="button"
+            className="breadcrumb__crumb"
+            onClick={() => onNavigate(segments.slice(0, index + 1).join("/"))}
+            disabled={index === segments.length - 1}
+          >
+            {segment}
+          </button>
+        </span>
+      ))}
+    </nav>
+  );
+
+  const toolbar = (
     <div className="diagram-toolbar">
-      <div className="segmented" role="group" aria-label="Diagram detail">
+      <div className="diagram-toolbar__group">
         <button
           type="button"
-          className={`segmented__btn${mode === "all" ? " is-active" : ""}`}
-          aria-pressed={mode === "all"}
-          onClick={() => selectMode("all")}
+          className="btn btn-ghost"
+          onClick={() => up !== null && onNavigate(up)}
+          disabled={up === null}
         >
-          All files
+          ↑ Up
         </button>
-        <button
-          type="button"
-          className={`segmented__btn${mode === "directories" ? " is-active" : ""}`}
-          aria-pressed={mode === "directories"}
-          onClick={() => selectMode("directories")}
-        >
-          Directories only
-        </button>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={showFiles}
+            onChange={(e) => setShowFiles(e.target.checked)}
+          />
+          Show files
+        </label>
+        <label className="toggle">
+          Depth
+          <select
+            className="select"
+            value={depth}
+            onChange={(e) => setDepth(Number(e.target.value) === 2 ? 2 : 1)}
+          >
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+          </select>
+        </label>
       </div>
       <span className="diagram-toolbar__count">
-        {plan.nodeCount.toLocaleString()} of{" "}
-        {(mode === "all" ? counts.total : counts.directories).toLocaleString()}{" "}
-        {mode === "all" ? "nodes" : "directories"} shown
+        {describeDirectory(current)} · {diagram.nodeCount} shown
       </span>
     </div>
   );
@@ -158,21 +216,7 @@ export function RepositoryDiagram({
       <div>
         <strong className="alert-title">Incomplete repository tree</strong>
         <span className="alert-body">
-          GitHub truncated the response, so this diagram may not contain every
-          file.
-        </span>
-      </div>
-    </div>
-  );
-
-  const depthNotice = plan.depthLimited && !plan.tooLarge && shouldRender && (
-    <div className="alert alert-warning" role="status">
-      <span aria-hidden="true">ⓘ</span>
-      <div>
-        <strong className="alert-title">Showing the top {plan.maxDepth} levels</strong>
-        <span className="alert-body">
-          The full tree is too large to draw. Use the File Tree view to explore
-          every level.
+          GitHub truncated the response, so some files may not be shown.
         </span>
       </div>
     </div>
@@ -180,45 +224,31 @@ export function RepositoryDiagram({
 
   let body: JSX.Element;
 
-  if (plan.tooLarge) {
-    const directoriesWouldHelp = mode === "all" && counts.directories > 0;
+  if (diagram.exceededMaxNodes) {
     body = (
       <div className="diagram-placeholder">
         <span className="diagram-placeholder__icon" aria-hidden="true">
           ⬡
         </span>
         <p className="diagram-placeholder__text">
-          This repository has{" "}
-          {(mode === "all"
-            ? counts.total
-            : counts.directories
-          ).toLocaleString()}{" "}
-          {mode === "all" ? "files and directories" : "directories"} — too many
-          to draw as a readable diagram.{" "}
-          {directoriesWouldHelp
-            ? "Try “Directories only” for a structural overview, or use the File Tree view."
-            : "The File Tree view still shows the complete structure."}
+          This directory contains {diagram.nodeCount.toLocaleString()} items,
+          too many to render as one diagram (the limit is{" "}
+          {MAX_DIAGRAM_NODES}). Use the File Tree, or select a subdirectory to
+          explore further.
         </p>
       </div>
     );
-  } else if (awaitingConfirmation) {
+  } else if (diagram.nodeCount === 0) {
     body = (
       <div className="diagram-placeholder">
         <span className="diagram-placeholder__icon" aria-hidden="true">
           ⬡
         </span>
         <p className="diagram-placeholder__text">
-          This diagram has {plan.nodeCount.toLocaleString()} nodes. Mermaid lays
-          diagrams out on the main thread, so rendering it may take up to half a
-          minute and will make the page unresponsive while it works.
+          {showFiles
+            ? "This directory is empty."
+            : "This directory contains no subdirectories. Turn on “Show files” to see its contents."}
         </p>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => setConfirmed(true)}
-        >
-          Render diagram anyway
-        </button>
       </div>
     );
   } else if (state.kind === "error") {
@@ -226,11 +256,9 @@ export function RepositoryDiagram({
       <div className="alert alert-error" role="alert">
         <span aria-hidden="true">⚠</span>
         <div>
-          <strong className="alert-title">
-            Unable to render repository diagram.
-          </strong>
+          <strong className="alert-title">Unable to render this diagram.</strong>
           <span className="alert-body">
-            The File Tree view still shows the repository structure.
+            Try opening a smaller directory or using the File Tree view.
           </span>
         </div>
       </div>
@@ -245,7 +273,9 @@ export function RepositoryDiagram({
   } else {
     body = (
       <div
+        ref={containerRef}
         className="diagram-svg-wrapper"
+        onClick={handleDiagramClick}
         // mermaid.render() returns SVG it has already sanitised
         // (securityLevel: "strict"), and labels are escaped before generation.
         dangerouslySetInnerHTML={{ __html: state.svg }}
@@ -256,8 +286,11 @@ export function RepositoryDiagram({
   return (
     <div className="diagram-view">
       {truncationNotice}
-      {depthNotice}
-      {modeSwitch}
+      {breadcrumb}
+      {toolbar}
+      <p className="diagram-hint">
+        Click a directory in the diagram to drill into it.
+      </p>
       {body}
     </div>
   );
