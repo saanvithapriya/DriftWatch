@@ -9,7 +9,7 @@ interface GithubApiError {
   status: number;
 }
 
-function isGithubApiError(error: unknown): error is GithubApiError {
+export function isGithubApiError(error: unknown): error is GithubApiError {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -22,7 +22,7 @@ function isGithubApiError(error: unknown): error is GithubApiError {
  * Translates an Octokit failure into a client-safe AppError. Raw Octokit
  * errors never leave this module.
  */
-function toAppError(error: unknown): AppError {
+export function toAppError(error: unknown): AppError {
   if (isGithubApiError(error)) {
     if (error.status === 404) {
       return new AppError(404, "GitHub repository not found");
@@ -45,7 +45,7 @@ function toAppError(error: unknown): AppError {
  * `commit`, which represents a submodule — are dropped, since they are not
  * part of this repository's own file tree.
  */
-function normalizeTreeEntries(
+export function normalizeTreeEntries(
   entries: ReadonlyArray<{ path?: string; type?: string }>
 ): RepositoryTreeNode[] {
   const nodes: RepositoryTreeNode[] = [];

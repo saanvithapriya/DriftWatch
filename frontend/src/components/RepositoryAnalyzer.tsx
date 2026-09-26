@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { analyzeGithubRepository } from "../services/api";
 import type { RepositoryTree } from "../types/github";
 import { isLikelyGithubRepositoryUrl } from "../utils/githubUrl";
@@ -6,15 +6,18 @@ import { buildFileTree } from "../utils/fileTree";
 import { FileTree } from "./FileTree";
 import { RepositoryDiagram } from "./RepositoryDiagram";
 import { RepositorySummary } from "./RepositorySummary";
-import type { TreeNode } from "../utils/mermaid";
 
 type Status = "idle" | "loading" | "success" | "error";
+type View = "tree" | "diagram";
 
 export function RepositoryAnalyzer() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<RepositoryTree | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Phase 1's file tree stays the default view; the diagram is opt-in, which
+  // also means Mermaid does no work until the user asks for it.
+  const [view, setView] = useState<View>("tree");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,17 +58,23 @@ export function RepositoryAnalyzer() {
     }
   }
 
-  // TODO: Replace buildFileTree(result.tree) with the real hierarchical
-  // TreeNode[] once the tree-processing workstream provides it.
-  const diagramTree: TreeNode[] | null =
-    result === null ? null : (buildFileTree(result.tree) as TreeNode[]);
+  // Memoized on `result`: this array is the `tree` prop of RepositoryDiagram,
+  // whose render effect keys on prop identity. Rebuilding it on every render
+  // would re-run the whole Mermaid render on each keystroke in the URL field.
+  const hierarchy = useMemo(
+    () => (result === null ? null : buildFileTree(result.tree)),
+    [result]
+  );
 
   const isLoading = status === "loading";
   const hasError = status === "error" && error !== null;
+  const repositoryLabel =
+    result === null
+      ? ""
+      : `${result.repository.owner}/${result.repository.name}`;
 
   return (
     <div className="analyzer-layout">
-
       {/* ── Analyzer card ── */}
       <section className="card analyzer-card" aria-label="Repository analyzer">
         <div className="card-header">
@@ -107,12 +116,13 @@ export function RepositoryAnalyzer() {
           </div>
         </form>
 
-        {/* Error state */}
         {hasError && (
           <div className="alert alert-error analyzer-error" role="alert">
             <span aria-hidden="true">⚠</span>
             <div>
-              <strong className="alert-title">Unable to analyze repository</strong>
+              <strong className="alert-title">
+                Unable to analyze repository
+              </strong>
               <span className="alert-body">{error}</span>
             </div>
           </div>
@@ -127,77 +137,93 @@ export function RepositoryAnalyzer() {
         </div>
       )}
 
-      {/* ── Success states ── */}
-      {status === "success" && result !== null && (
+      {/* ── Success ── */}
+      {status === "success" && result !== null && hierarchy !== null && (
         <>
-          {/* Repository summary */}
           <RepositorySummary result={result} />
 
-          {/* Mermaid visualization */}
-          <section className="analyzer-section" aria-label="Repository structure diagram">
+          <section className="analyzer-section" aria-label="Repository structure">
             <div className="analyzer-section__header">
               <h3 className="analyzer-section__title">Repository Structure</h3>
               <p className="analyzer-section__desc">
-                Visual representation of the repository's file and folder structure.
+                Browse the files, or view the structure as a diagram.
               </p>
             </div>
-            <div className="card diagram-card">
-              <RepositoryDiagram tree={diagramTree} status={status} />
-            </div>
-          </section>
 
-          {/* File tree */}
-          <section className="analyzer-section" aria-label="Repository files">
-            <div className="analyzer-section__header">
-              <h3 className="analyzer-section__title">Repository Files</h3>
-              <p className="analyzer-section__desc">
-                Explore the file and folder structure.
-              </p>
+            <div className="viewtabs" role="tablist" aria-label="Structure view">
+              <button
+                type="button"
+                role="tab"
+                id="tab-tree"
+                aria-selected={view === "tree"}
+                aria-controls="panel-tree"
+                className={`viewtabs__tab${view === "tree" ? " is-active" : ""}`}
+                onClick={() => setView("tree")}
+              >
+                File Tree
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-diagram"
+                aria-selected={view === "diagram"}
+                aria-controls="panel-diagram"
+                className={`viewtabs__tab${view === "diagram" ? " is-active" : ""}`}
+                onClick={() => setView("diagram")}
+              >
+                Diagram
+              </button>
             </div>
-            <div className="card filetree-card">
-              <FileTree nodes={result.tree} />
-            </div>
+
+            {view === "tree" ? (
+              <div
+                className="card filetree-card"
+                id="panel-tree"
+                role="tabpanel"
+                aria-labelledby="tab-tree"
+              >
+                <FileTree nodes={result.tree} />
+              </div>
+            ) : (
+              <div
+                className="card diagram-card"
+                id="panel-diagram"
+                role="tabpanel"
+                aria-labelledby="tab-diagram"
+              >
+                <RepositoryDiagram
+                  // Remount per repository so diagram mode resets with it.
+                  key={repositoryLabel}
+                  tree={hierarchy}
+                  repositoryLabel={repositoryLabel}
+                  truncated={result.truncated}
+                />
+              </div>
+            )}
           </section>
         </>
       )}
 
-      {/* ── Empty states (shown when idle or error) ── */}
+      {/* ── Empty state (idle or error) ── */}
       {(status === "idle" || status === "error") && (
-        <>
-          <section className="analyzer-section" aria-label="Repository structure diagram">
-            <div className="analyzer-section__header">
-              <h3 className="analyzer-section__title">Repository Structure</h3>
-              <p className="analyzer-section__desc">
-                Visual representation of the repository's file and folder structure.
+        <section className="analyzer-section" aria-label="Repository structure">
+          <div className="analyzer-section__header">
+            <h3 className="analyzer-section__title">Repository Structure</h3>
+            <p className="analyzer-section__desc">
+              Browse the files, or view the structure as a diagram.
+            </p>
+          </div>
+          <div className="card filetree-card filetree-card--empty">
+            <div className="empty-state">
+              <span className="empty-state__icon" aria-hidden="true">
+                📂
+              </span>
+              <p className="empty-state__text">
+                Analyze a GitHub repository to see its structure here.
               </p>
             </div>
-            <div className="card diagram-card diagram-card--empty">
-              <div className="empty-state">
-                <span className="empty-state__icon" aria-hidden="true">⬡</span>
-                <p className="empty-state__text">
-                  Analyze a GitHub repository to see its structure here.
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <section className="analyzer-section" aria-label="Repository files">
-            <div className="analyzer-section__header">
-              <h3 className="analyzer-section__title">Repository Files</h3>
-              <p className="analyzer-section__desc">
-                Explore the file and folder structure.
-              </p>
-            </div>
-            <div className="card filetree-card filetree-card--empty">
-              <div className="empty-state">
-                <span className="empty-state__icon" aria-hidden="true">📂</span>
-                <p className="empty-state__text">
-                  Your repository file tree will appear here after analysis.
-                </p>
-              </div>
-            </div>
-          </section>
-        </>
+          </div>
+        </section>
       )}
     </div>
   );

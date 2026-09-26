@@ -1,19 +1,19 @@
 import type { RepositoryTreeNode } from "../types/github";
+import type { TreeCounts, TreeNode } from "../types/tree";
 
-export interface FileTreeNode {
-  name: string;
-  path: string;
-  type: "file" | "directory";
-  children: FileTreeNode[];
-}
+/**
+ * Retained name for the UI file-tree components; the canonical domain type
+ * now lives in `types/tree.ts`.
+ */
+export type FileTreeNode = TreeNode;
 
-function compareNodes(a: FileTreeNode, b: FileTreeNode): number {
+function compareNodes(a: TreeNode, b: TreeNode): number {
   // Directories first, then case-insensitive alphabetical.
   if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
-function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
+function sortTree(nodes: TreeNode[]): TreeNode[] {
   nodes.sort(compareNodes);
   for (const node of nodes) {
     if (node.children.length > 0) sortTree(node.children);
@@ -24,14 +24,18 @@ function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
 /**
  * Turns the backend's flat, slash-separated paths into a nested tree.
  *
+ * Deterministic: a path is only ever turned into one node, and siblings are
+ * ordered directories-first then alphabetically, so the same input always
+ * produces byte-identical output (which the Mermaid generator relies on).
+ *
  * Missing intermediate segments are created as directories, so a truncated
  * response whose parent entries were cut off still renders sensibly.
  */
 export function buildFileTree(
   nodes: readonly RepositoryTreeNode[]
-): FileTreeNode[] {
-  const roots: FileTreeNode[] = [];
-  const byPath = new Map<string, FileTreeNode>();
+): TreeNode[] {
+  const roots: TreeNode[] = [];
+  const byPath = new Map<string, TreeNode>();
 
   for (const node of nodes) {
     const segments = node.path.split("/").filter((s) => s !== "");
@@ -66,4 +70,21 @@ export function buildFileTree(
   }
 
   return sortTree(roots);
+}
+
+/** Counts every node in a hierarchical tree, by kind. */
+export function countTreeNodes(nodes: readonly TreeNode[]): TreeCounts {
+  let files = 0;
+  let directories = 0;
+
+  const visit = (list: readonly TreeNode[]): void => {
+    for (const node of list) {
+      if (node.type === "file") files += 1;
+      else directories += 1;
+      if (node.children.length > 0) visit(node.children);
+    }
+  };
+
+  visit(nodes);
+  return { files, directories, total: files + directories };
 }

@@ -3,15 +3,40 @@ import { getHealth } from "../services/api";
 
 type HealthStatus = "checking" | "online" | "offline";
 
+const HEALTH_POLL_INTERVAL_MS = 10_000;
+
 export function Header() {
   const [healthStatus, setHealthStatus] = useState<HealthStatus>("checking");
 
   useEffect(() => {
     let cancelled = false;
-    getHealth()
-      .then(() => { if (!cancelled) setHealthStatus("online"); })
-      .catch(() => { if (!cancelled) setHealthStatus("offline"); });
-    return () => { cancelled = true; };
+
+    // Re-checked rather than probed once: a single check on mount leaves the
+    // badge stuck on "Backend Offline" for the rest of the session if the
+    // backend happened to be starting, and it never notices a backend that
+    // goes away later.
+    function check(): void {
+      getHealth()
+        .then(() => {
+          if (!cancelled) setHealthStatus("online");
+        })
+        .catch(() => {
+          if (!cancelled) setHealthStatus("offline");
+        });
+    }
+
+    check();
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") check();
+    }, HEALTH_POLL_INTERVAL_MS);
+    window.addEventListener("focus", check);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", check);
+    };
   }, []);
 
   const dotClass = `status-dot ${healthStatus}`;

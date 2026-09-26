@@ -1,213 +1,285 @@
 /**
- * Tests for treeToMermaid()
- *
- * Plain TypeScript — no test-framework dependency.
- * Each test throws on failure so the exit code is non-zero if any test fails.
+ * Tests for generateMermaidDiagram() and escapeLabel().
  *
  * Run with:  npx tsx src/utils/mermaid.test.ts
  */
-import { treeToMermaid, type TreeNode } from "./mermaid";
+import type { TreeNode } from "../types/tree";
+import { buildFileTree } from "./fileTree";
+import { escapeLabel, generateMermaidDiagram } from "./mermaid";
+import { assert, assertEqual, report, test } from "./testHarness";
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+const REPO = { repositoryLabel: "octocat/Hello-World" };
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    throw new Error(`Assertion failed: ${message}`);
+const f = (name: string, path: string): TreeNode => ({
+  name,
+  path,
+  type: "file",
+  children: [],
+});
+
+const d = (name: string, path: string, children: TreeNode[]): TreeNode => ({
+  name,
+  path,
+  type: "directory",
+  children,
+});
+
+/** All node-definition IDs, in order of appearance. */
+function nodeIds(diagram: string): string[] {
+  const ids: string[] = [];
+  for (const line of diagram.split("\n")) {
+    const match = /^ {2}([A-Za-z0-9_]+)[[("]/.exec(line);
+    if (match !== null) ids.push(match[1]);
   }
+  return ids;
 }
 
-interface TestResult {
-  label: string;
-  passed: boolean;
-  error?: string;
-}
-
-const results: TestResult[] = [];
-
-function test(label: string, fn: () => void): void {
-  try {
-    fn();
-    results.push({ label, passed: true });
-  } catch (err) {
-    results.push({
-      label,
-      passed: false,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-// ── test cases ────────────────────────────────────────────────────────────────
-
-// 1. Empty tree
-test("empty tree returns valid header only", () => {
-  const result = treeToMermaid([]);
-  assert(result === "graph TD", `Expected "graph TD", got: ${result}`);
-});
-
-// 2. Single file
-test("single file produces a rectangle node definition", () => {
-  const tree: TreeNode[] = [
-    { name: "README.md", path: "README.md", type: "file" },
-  ];
-  const result = treeToMermaid(tree);
-  assert(result.startsWith("graph TD"), "must start with graph TD");
-  assert(result.includes("n_README_md"), "must contain node ID for README.md");
-  // File nodes use square-bracket syntax: id["label"]
-  assert(result.includes("n_README_md["), "file node must use rect [ syntax");
-});
-
-// 3. Directory with one child file → parent → child edge
-test("directory with one file produces a parent → child edge", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "src",
-      path: "src",
-      type: "directory",
-      children: [{ name: "index.ts", path: "src/index.ts", type: "file" }],
-    },
-  ];
-  const result = treeToMermaid(tree);
-  assert(result.includes("n_src"), "must contain src node ID");
-  assert(result.includes("n_src_index_ts"), "must contain child node ID");
-  assert(result.includes("n_src --> n_src_index_ts"), "must contain edge");
-  // Directory uses rounded-bracket shape: id("label")
-  assert(result.includes('n_src("'), "directory must use rounded ( shape");
-});
-
-// 4. Nested directories — all intermediate edges present
-test("deeply nested directories produce all edges", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "a",
-      path: "a",
-      type: "directory",
-      children: [
-        {
-          name: "b",
-          path: "a/b",
-          type: "directory",
-          children: [{ name: "c.ts", path: "a/b/c.ts", type: "file" }],
-        },
-      ],
-    },
-  ];
-  const result = treeToMermaid(tree);
-  assert(result.includes("n_a --> n_a_b"), "must have edge a → b");
-  assert(result.includes("n_a_b --> n_a_b_c_ts"), "must have edge b → c");
-});
-
-// 5. Multiple sibling files — all unique node IDs
-test("multiple sibling files all get unique, distinct node IDs", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "src",
-      path: "src",
-      type: "directory",
-      children: [
-        { name: "alpha.ts", path: "src/alpha.ts", type: "file" },
-        { name: "beta.ts", path: "src/beta.ts", type: "file" },
-        { name: "gamma.ts", path: "src/gamma.ts", type: "file" },
-      ],
-    },
-  ];
-  const result = treeToMermaid(tree);
-  const ids = ["n_src_alpha_ts", "n_src_beta_ts", "n_src_gamma_ts"];
-  for (const id of ids) {
-    assert(result.includes(id), `must contain node ID: ${id}`);
-  }
-  // Each definition line must appear exactly once
-  const definitionLines = result
+function edges(diagram: string): string[] {
+  return diagram
     .split("\n")
-    .filter((l) => !l.includes("-->"))
-    .join("\n");
-  for (const id of ids) {
-    const matches = definitionLines.match(new RegExp(id, "g")) ?? [];
-    assert(matches.length === 1, `${id} defined ${matches.length}×, expected 1`);
-  }
-});
+    .filter((line) => line.includes("-->"))
+    .map((line) => line.trim());
+}
 
-// 6. Special characters in filenames — must not break Mermaid label syntax
-test("special characters in filenames are escaped in labels", () => {
-  const tree: TreeNode[] = [
-    {
-      name: 'say "hello" & more',
-      path: 'say "hello" & more',
-      type: "file",
-    },
-  ];
-  const result = treeToMermaid(tree);
-  // Raw unescaped double-quote inside the label would break Mermaid rendering
-  // The label is wrapped in double-quotes, so inner " must be escaped as \"
+test("diagram starts with a graph TD header", () => {
   assert(
-    !result.match(/\["say "hello"/),
-    "raw double-quote inside label must be escaped"
-  );
-  // The path-derived node ID must sanitise special chars to underscores
-  assert(result.includes("n_say__hello__"), "path-based ID must be sanitised");
-});
-
-// 7. Deterministic — same input always produces identical output
-test("same input produces identical output across multiple calls (deterministic)", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "lib",
-      path: "lib",
-      type: "directory",
-      children: [
-        { name: "util.ts", path: "lib/util.ts", type: "file" },
-        { name: "core.ts", path: "lib/core.ts", type: "file" },
-      ],
-    },
-    { name: "index.ts", path: "index.ts", type: "file" },
-  ];
-
-  const first = treeToMermaid(tree);
-  const second = treeToMermaid(tree);
-  const third = treeToMermaid(tree);
-
-  assert(first === second, "first and second runs produced different output");
-  assert(second === third, "second and third runs produced different output");
-});
-
-// 8. Duplicate paths — node defined only once (de-dup guard)
-test("nodes with duplicate paths are defined exactly once", () => {
-  // Same object reference inserted twice — synthetic edge case to exercise the
-  // seen-set guard in treeToMermaid.
-  const shared: TreeNode = {
-    name: "shared.ts",
-    path: "shared.ts",
-    type: "file",
-  };
-  const tree: TreeNode[] = [shared, shared];
-  const result = treeToMermaid(tree);
-
-  // Count definition occurrences (lines that contain the id + "[")
-  const definitionLines = result
-    .split("\n")
-    .filter((l) => l.includes("n_shared_ts["));
-  assert(
-    definitionLines.length === 1,
-    `node defined ${definitionLines.length}×, expected 1`
+    generateMermaidDiagram([], REPO).startsWith("graph TD"),
+    "header present"
   );
 });
 
-// ── report ────────────────────────────────────────────────────────────────────
+test("a root node labelled with the repository always exists", () => {
+  const out = generateMermaidDiagram([f("README.md", "README.md")], REPO);
+  assert(
+    out.includes('root(["octocat/Hello-World"])'),
+    "root node present, got:\n" + out
+  );
+});
 
-const passed = results.filter((r) => r.passed).length;
-const failed = results.filter((r) => !r.passed).length;
+test("an empty repository still produces a valid diagram with just the root", () => {
+  const out = generateMermaidDiagram([], REPO);
+  assertEqual(
+    out,
+    'graph TD\n  root(["octocat/Hello-World"])',
+    "root-only diagram"
+  );
+  assert(!out.includes("-->"), "no edges");
+});
 
-console.log("\ntreeToMermaid() tests\n");
-for (const r of results) {
-  if (r.passed) {
-    console.log(`  ✓ ${r.label}`);
-  } else {
-    console.error(`  ✗ ${r.label}`);
-    console.error(`    ${r.error ?? "(no message)"}`);
+test("files and directories both appear, with their names as labels", () => {
+  const out = generateMermaidDiagram(
+    [d("src", "src", [f("App.tsx", "src/App.tsx")])],
+    REPO
+  );
+  assert(out.includes('"\u{1F4C1} src"'), "directory label present");
+  assert(out.includes('"\u{1F4C4} App.tsx"'), "file label present");
+});
+
+test("directories and files use distinguishable node shapes", () => {
+  const out = generateMermaidDiagram(
+    [d("src", "src", [f("App.tsx", "src/App.tsx")])],
+    REPO
+  );
+  assert(/node_\d+\("\u{1F4C1} src"\)/u.test(out), "directory uses rounded shape");
+  assert(/node_\d+\["\u{1F4C4} App\.tsx"\]/u.test(out), "file uses rectangle shape");
+});
+
+test("every parent-child relationship is represented as an edge", () => {
+  const tree = buildFileTree([
+    { path: "src/components/Header.tsx", type: "file" },
+    { path: "README.md", type: "file" },
+  ]);
+  const out = generateMermaidDiagram(tree, REPO);
+  // root + src + components + Header.tsx + README.md
+  assertEqual(nodeIds(out).length, 5, "one node per entry");
+
+  const targets = edges(out).map((e) => e.split("-->")[1].trim());
+  assertEqual(targets.length, 4, "four edges");
+  assertEqual(new Set(targets).size, 4, "each child linked exactly once");
+  assert(!targets.includes("root"), "root is never a child");
+});
+
+test("every node receives a unique Mermaid ID", () => {
+  const tree = buildFileTree([
+    { path: "src/a.ts", type: "file" },
+    { path: "src/b.ts", type: "file" },
+    { path: "lib/a.ts", type: "file" },
+  ]);
+  const ids = nodeIds(generateMermaidDiagram(tree, REPO));
+  assertEqual(new Set(ids).size, ids.length, "IDs unique: " + ids.join(","));
+});
+
+test("paths differing only by punctuation get distinct IDs", () => {
+  // Regression: IDs derived by substituting unsafe characters mapped
+  // a-b.txt, a_b.txt and a.b.txt onto one ID, silently dropping two files.
+  const tree = buildFileTree([
+    { path: "src/a-b.txt", type: "file" },
+    { path: "src/a_b.txt", type: "file" },
+    { path: "src/a.b.txt", type: "file" },
+  ]);
+  const out = generateMermaidDiagram(tree, REPO);
+  const ids = nodeIds(out);
+  assertEqual(new Set(ids).size, ids.length, "no ID collisions");
+  for (const name of ["a-b.txt", "a_b.txt", "a.b.txt"]) {
+    assert(out.includes('"\u{1F4C4} ' + name + '"'), name + " still present");
   }
-}
-console.log(`\n${passed} passed, ${failed} failed.\n`);
+  assertEqual(edges(out).length, 4, "src plus three files are all linked");
+});
 
-if (failed > 0) {
-  throw new Error(`${failed} test(s) failed.`);
-}
+test("identical filenames in different directories remain separate nodes", () => {
+  const tree = buildFileTree([
+    { path: "src/App.tsx", type: "file" },
+    { path: "src/components/App.tsx", type: "file" },
+  ]);
+  const out = generateMermaidDiagram(tree, REPO);
+  assertEqual(
+    out.split('"\u{1F4C4} App.tsx"').length - 1,
+    2,
+    "two separate App.tsx nodes"
+  );
+  const ids = nodeIds(out);
+  assertEqual(new Set(ids).size, ids.length, "with distinct IDs");
+});
+
+test("special characters are escaped instead of breaking the syntax", () => {
+  const tree = buildFileTree([
+    { path: 'weird/a"b.ts', type: "file" },
+    { path: "weird/a<b>c.ts", type: "file" },
+    { path: "weird/a&b#c.ts", type: "file" },
+  ]);
+  const out = generateMermaidDiagram(tree, REPO);
+
+  for (const line of out.split("\n").filter((l) => l.includes("\u{1F4C4}"))) {
+    const inner = /"([^"]*)"/.exec(line)?.[1] ?? "";
+    assert(!inner.includes('"'), "no raw quote in label: " + line);
+    assert(!inner.includes("<"), "no raw angle bracket in label: " + line);
+    assert(!inner.includes(">"), "no raw angle bracket in label: " + line);
+  }
+});
+
+test("bracket-heavy route filenames survive unchanged", () => {
+  // Next.js style dynamic routes are common and must not break the diagram.
+  const tree = buildFileTree([{ path: "app/[id]/page.tsx", type: "file" }]);
+  const out = generateMermaidDiagram(tree, REPO);
+  assert(out.includes('"\u{1F4C1} [id]"'), "bracket directory kept, got:\n" + out);
+  assert(out.includes('"\u{1F4C4} page.tsx"'), "leaf present");
+});
+
+test("escapeLabel escapes # before introducing its own # entities", () => {
+  assertEqual(escapeLabel("a#b"), "a#35;b", "hash escaped");
+  assertEqual(escapeLabel('a"b'), "a#quot;b", "quote escaped");
+  assertEqual(escapeLabel("a&b"), "a#amp;b", "ampersand escaped");
+  assertEqual(escapeLabel("<b>"), "#lt;b#gt;", "angle brackets escaped");
+  // The '#' of '#amp;' must not be re-escaped into '#35;amp;'.
+  assert(!escapeLabel("a&b").includes("#35;"), "no double escaping");
+});
+
+test("output is deterministic across repeated calls", () => {
+  const tree = buildFileTree([
+    { path: "src/components/Header.tsx", type: "file" },
+    { path: "src/App.tsx", type: "file" },
+    { path: "README.md", type: "file" },
+  ]);
+  assertEqual(
+    generateMermaidDiagram(tree, REPO),
+    generateMermaidDiagram(tree, REPO),
+    "same input, same output"
+  );
+});
+
+test("directoriesOnly omits files but keeps the directory skeleton", () => {
+  const tree = buildFileTree([
+    { path: "src/components/Header.tsx", type: "file" },
+    { path: "src/App.tsx", type: "file" },
+    { path: "README.md", type: "file" },
+  ]);
+  const out = generateMermaidDiagram(tree, { ...REPO, directoriesOnly: true });
+  assert(!out.includes("\u{1F4C4}"), "no file nodes, got:\n" + out);
+  assert(out.includes('"\u{1F4C1} src"'), "src kept");
+  assert(out.includes('"\u{1F4C1} components"'), "nested directory kept");
+});
+
+test("a node appearing twice is defined only once", () => {
+  const duplicated: TreeNode[] = [
+    d("src", "src", [f("App.tsx", "src/App.tsx")]),
+    d("src", "src", [f("App.tsx", "src/App.tsx")]),
+  ];
+  const out = generateMermaidDiagram(duplicated, REPO);
+  assertEqual(out.split('"\u{1F4C1} src"').length - 1, 1, "src defined once");
+  assertEqual(
+    out.split('"\u{1F4C4} App.tsx"').length - 1,
+    1,
+    "App.tsx defined once"
+  );
+});
+
+test("200+ collision-prone paths all receive unique IDs", () => {
+  // Every one of these path families collapses onto the same ID under a
+  // "replace unsafe characters with _" scheme.
+  const flat: Array<{ path: string; type: "file" | "directory" }> = [];
+  for (let i = 0; i < 50; i++) {
+    flat.push({ path: `src/a-b${i}/file.ts`, type: "file" });
+    flat.push({ path: `src/a_b${i}/file.ts`, type: "file" });
+    flat.push({ path: `src/a.b${i}/file.ts`, type: "file" });
+    flat.push({ path: `src/a b${i}/file.ts`, type: "file" });
+  }
+  const tree = buildFileTree(flat);
+  const out = generateMermaidDiagram(tree, REPO);
+  const ids = nodeIds(out);
+
+  assert(ids.length > 200, `more than 200 nodes, got ${ids.length}`);
+  assertEqual(new Set(ids).size, ids.length, "every ID is unique");
+
+  // Each edge target must be a node that was actually defined.
+  const defined = new Set(ids);
+  for (const edge of edges(out)) {
+    const [from, to] = edge.split("-->").map((p) => p.trim());
+    assert(from === "root" || defined.has(from), `edge source defined: ${from}`);
+    assert(defined.has(to), `edge target defined: ${to}`);
+  }
+});
+
+test("node IDs are always valid Mermaid identifiers", () => {
+  const flat: Array<{ path: string; type: "file" | "directory" }> = [
+    { path: '1-starts-with-digit/a"b.ts', type: "file" },
+    { path: "graph/end/subgraph.ts", type: "file" },
+    { path: "éüñ/中文.ts", type: "file" },
+    { path: "sp ace/tab	char.ts", type: "file" },
+  ];
+  const ids = nodeIds(generateMermaidDiagram(buildFileTree(flat), REPO));
+  for (const id of ids) {
+    assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(id), `valid identifier: ${id}`);
+  }
+});
+
+test("parent-child edges mirror the real hierarchy, not just string presence", () => {
+  const tree = buildFileTree([
+    { path: "src/components/Header.tsx", type: "file" },
+  ]);
+  const out = generateMermaidDiagram(tree, REPO);
+
+  // Resolve each ID back to its label so the edges can be checked by name.
+  const labelById = new Map<string, string>();
+  for (const line of out.split("\n")) {
+    const m = /^ {2}([A-Za-z0-9_]+)[[("]+"([^"]*)"/.exec(line);
+    if (m !== null) labelById.set(m[1], m[2].replace(/^[^ ]+ /, ""));
+  }
+  labelById.set("root", "octocat/Hello-World");
+
+  const named = edges(out).map((e) => {
+    const [from, to] = e.split("-->").map((p) => p.trim());
+    return `${labelById.get(from)} -> ${labelById.get(to)}`;
+  });
+
+  assertEqual(
+    named,
+    [
+      "octocat/Hello-World -> src",
+      "src -> components",
+      "components -> Header.tsx",
+    ],
+    "the chain repository -> src -> components -> Header.tsx"
+  );
+});
+
+report("generateMermaidDiagram() tests");

@@ -502,7 +502,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 
 /* Mermaid injects an SVG — ensure it's fully visible */
 .diagram-svg-wrapper svg {
-  max-width: 100%;
+  /* Keep the diagram at its natural size. Constraining it to the card width
+     scales a wide graph down until the labels are unreadable (a 24,000px
+     diagram collapses to ~40px tall); the wrapper scrolls instead. */
+  max-width: none;
   height: auto;
   display: block;
 }
@@ -722,4 +725,102 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   .page-content {
     gap: var(--space-6);
   }
+}
+
+/* ── Phase 2: view tabs + diagram controls ─────────────────────────────── */
+
+.viewtabs {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  margin-bottom: var(--space-4);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.viewtabs__tab {
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.viewtabs__tab:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.viewtabs__tab.is-active {
+  color: var(--text-primary);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.viewtabs__tab:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.diagram-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.diagram-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.diagram-toolbar__count {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.segmented__btn {
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.segmented__btn + .segmented__btn {
+  border-left: 1px solid var(--border);
+}
+
+.segmented__btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.segmented__btn.is-active {
+  color: var(--text-primary);
+  background: var(--accent-muted);
+}
+
+.segmented__btn:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
 }

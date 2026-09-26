@@ -1,19 +1,17 @@
 /**
- * Phase 2: Renders a repository's file/folder structure as a Mermaid diagram.
+ * Phase 2: renders a repository's file/folder structure as a Mermaid diagram.
  *
- * Props:
- *   tree     – hierarchical TreeNode[] from the data contract
- *   status   – mirrors the parent's loading state so we reuse Phase 1 UI
- *
- * NOTE: The Mermaid generation logic (treeToMermaid) is NOT changed here.
- * Only the inline styles have been replaced with CSS class names to fit
- * the dark-themed design system. All diagram logic is preserved exactly.
+ * All Mermaid *generation* lives in `utils/mermaid.ts` and all sizing policy
+ * in `utils/diagramPlan.ts`; this component owns initialisation, rendering
+ * and the surrounding UI states only.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import mermaid from "mermaid";
-import { treeToMermaid, type TreeNode } from "../utils/mermaid";
+import type { TreeNode } from "../types/tree";
+import { countTreeNodes } from "../utils/fileTree";
+import { planDiagram, type DiagramMode } from "../utils/diagramPlan";
+import { generateMermaidDiagram } from "../utils/mermaid";
 
-// ── Mermaid is initialised once per page load ──────────────
 let mermaidInitialised = false;
 
 function ensureMermaidInitialised(): void {
@@ -21,150 +19,246 @@ function ensureMermaidInitialised(): void {
   mermaid.initialize({
     startOnLoad: false,
     theme: "dark",
-    securityLevel: "loose",
+    // "strict" sanitises the rendered SVG. Labels come from repository
+    // filenames, i.e. untrusted input, so it stays on.
+    securityLevel: "strict",
+    // useMaxWidth would scale a wide graph down to the card width, which
+    // makes large diagrams unreadable. Keep the natural size and let the
+    // wrapper scroll instead.
+    flowchart: { htmlLabels: false, useMaxWidth: false },
   });
   mermaidInitialised = true;
 }
 
-// Rough heuristic: >300 nodes may cause the SVG renderer to struggle.
-const NODE_LIMIT = 300;
-
-function countAllNodes(tree: TreeNode[]): number {
-  let total = 0;
-  for (const node of tree) {
-    total += 1;
-    if (node.children) total += countAllNodes(node.children);
-  }
-  return total;
-}
-
-type DiagramState =
-  | { kind: "idle" }
-  | { kind: "rendering" }
-  | { kind: "success"; svg: string }
-  | { kind: "too-large" }
-  | { kind: "error"; message: string };
-
-interface RepositoryDiagramProps {
-  tree: TreeNode[] | null;
-  status: "idle" | "loading" | "success" | "error";
-}
-
 let diagramCounter = 0;
 
-export function RepositoryDiagram({ tree, status }: RepositoryDiagramProps) {
-  const [diagram, setDiagram] = useState<DiagramState>({ kind: "idle" });
-  const containerRef = useRef<HTMLDivElement>(null);
+type DiagramState =
+  | { kind: "rendering" }
+  | { kind: "success"; svg: string }
+  | { kind: "error" };
+
+interface RepositoryDiagramProps {
+  tree: TreeNode[];
+  /** Label for the diagram's root node, e.g. `facebook/react`. */
+  repositoryLabel: string;
+  /** True when GitHub truncated the tree this diagram was built from. */
+  truncated: boolean;
+}
+
+export function RepositoryDiagram({
+  tree,
+  repositoryLabel,
+  truncated,
+}: RepositoryDiagramProps) {
+  const counts = useMemo(() => countTreeNodes(tree), [tree]);
+
+  // Very large repositories open in directory-only mode, which is both more
+  // likely to fit and the more readable view at that size.
+  const [mode, setMode] = useState<DiagramMode>(() =>
+    planDiagram(tree, "all").tooLarge && counts.directories > 0
+      ? "directories"
+      : "all"
+  );
+  const [confirmed, setConfirmed] = useState(false);
+  const [state, setState] = useState<DiagramState>({ kind: "rendering" });
+
+  const plan = useMemo(() => planDiagram(tree, mode), [tree, mode]);
+
+  const isEmpty = tree.length === 0;
+  const awaitingConfirmation = plan.needsConfirmation && !confirmed;
+  const shouldRender = !isEmpty && !plan.tooLarge && !awaitingConfirmation;
 
   useEffect(() => {
-    if (status === "idle" || status === "error") {
-      setDiagram({ kind: "idle" });
-      return;
-    }
+    if (!shouldRender) return;
 
-    if (status === "loading") {
-      setDiagram({ kind: "rendering" });
-      return;
-    }
+    let cancelled = false;
+    setState({ kind: "rendering" });
 
-    // status === "success"
-    if (!tree || tree.length === 0) {
-      setDiagram({ kind: "idle" });
-      return;
-    }
-
-    const nodeCount = countAllNodes(tree);
-    if (nodeCount > NODE_LIMIT) {
-      setDiagram({ kind: "too-large" });
-      return;
-    }
+    const definition = generateMermaidDiagram(tree, {
+      repositoryLabel,
+      directoriesOnly: plan.directoriesOnly,
+      maxDepth: plan.maxDepth,
+    });
 
     ensureMermaidInitialised();
-
-    const definition = treeToMermaid(tree);
-    const id = `mermaid-diagram-${++diagramCounter}`;
-
-    setDiagram({ kind: "rendering" });
+    const id = `repository-diagram-${(diagramCounter += 1)}`;
 
     mermaid
       .render(id, definition)
       .then(({ svg }) => {
-        setDiagram({ kind: "success", svg });
+        if (!cancelled) setState({ kind: "success", svg });
       })
-      .catch((err: unknown) => {
-        const message =
-          err instanceof Error
-            ? err.message
-            : "Could not render the repository diagram.";
-        setDiagram({ kind: "error", message });
+      .catch((error: unknown) => {
+        // The user gets a short message; the real error goes to the console
+        // so it can be debugged.
+        console.error("Mermaid failed to render the repository diagram:", error);
+        if (!cancelled) setState({ kind: "error" });
       });
-  }, [tree, status]);
 
-  // ── UI states ─────────────────────────────────────────────
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tree,
+    repositoryLabel,
+    plan.directoriesOnly,
+    plan.maxDepth,
+    shouldRender,
+  ]);
 
-  if (status === "loading") {
+  if (isEmpty) {
     return (
-      <div className="diagram-placeholder">
-        <span className="spinner spinner--large" aria-hidden="true" />
-        <p className="diagram-placeholder__text">Rendering diagram…</p>
-      </div>
-    );
-  }
-
-  if (status === "error") return null;
-
-  // success branch
-  if (!tree || tree.length === 0) {
-    return (
-      <p className="diagram-placeholder__text">
-        No files found in this repository.
-      </p>
-    );
-  }
-
-  if (diagram.kind === "too-large") {
-    return (
-      <div className="diagram-placeholder">
-        <span className="diagram-placeholder__icon" aria-hidden="true">⬡</span>
-        <p className="diagram-placeholder__text">
-          This repository is too large to display as a diagram (over {NODE_LIMIT} nodes).
-          The file tree below still shows the full structure.
+      <div className="empty-state">
+        <span className="empty-state__icon" aria-hidden="true">
+          ⬡
+        </span>
+        <p className="empty-state__text">
+          Repository has no files to visualize.
         </p>
       </div>
     );
   }
 
-  if (diagram.kind === "error") {
-    return (
+  function selectMode(next: DiagramMode): void {
+    setMode(next);
+    setConfirmed(false);
+  }
+
+  const modeSwitch = counts.directories > 0 && (
+    <div className="diagram-toolbar">
+      <div className="segmented" role="group" aria-label="Diagram detail">
+        <button
+          type="button"
+          className={`segmented__btn${mode === "all" ? " is-active" : ""}`}
+          aria-pressed={mode === "all"}
+          onClick={() => selectMode("all")}
+        >
+          All files
+        </button>
+        <button
+          type="button"
+          className={`segmented__btn${mode === "directories" ? " is-active" : ""}`}
+          aria-pressed={mode === "directories"}
+          onClick={() => selectMode("directories")}
+        >
+          Directories only
+        </button>
+      </div>
+      <span className="diagram-toolbar__count">
+        {plan.nodeCount.toLocaleString()} of{" "}
+        {(mode === "all" ? counts.total : counts.directories).toLocaleString()}{" "}
+        {mode === "all" ? "nodes" : "directories"} shown
+      </span>
+    </div>
+  );
+
+  const truncationNotice = truncated && (
+    <div className="alert alert-warning" role="alert">
+      <span aria-hidden="true">⚠</span>
+      <div>
+        <strong className="alert-title">Incomplete repository tree</strong>
+        <span className="alert-body">
+          GitHub truncated the response, so this diagram may not contain every
+          file.
+        </span>
+      </div>
+    </div>
+  );
+
+  const depthNotice = plan.depthLimited && !plan.tooLarge && shouldRender && (
+    <div className="alert alert-warning" role="status">
+      <span aria-hidden="true">ⓘ</span>
+      <div>
+        <strong className="alert-title">Showing the top {plan.maxDepth} levels</strong>
+        <span className="alert-body">
+          The full tree is too large to draw. Use the File Tree view to explore
+          every level.
+        </span>
+      </div>
+    </div>
+  );
+
+  let body: JSX.Element;
+
+  if (plan.tooLarge) {
+    const directoriesWouldHelp = mode === "all" && counts.directories > 0;
+    body = (
+      <div className="diagram-placeholder">
+        <span className="diagram-placeholder__icon" aria-hidden="true">
+          ⬡
+        </span>
+        <p className="diagram-placeholder__text">
+          This repository has{" "}
+          {(mode === "all"
+            ? counts.total
+            : counts.directories
+          ).toLocaleString()}{" "}
+          {mode === "all" ? "files and directories" : "directories"} — too many
+          to draw as a readable diagram.{" "}
+          {directoriesWouldHelp
+            ? "Try “Directories only” for a structural overview, or use the File Tree view."
+            : "The File Tree view still shows the complete structure."}
+        </p>
+      </div>
+    );
+  } else if (awaitingConfirmation) {
+    body = (
+      <div className="diagram-placeholder">
+        <span className="diagram-placeholder__icon" aria-hidden="true">
+          ⬡
+        </span>
+        <p className="diagram-placeholder__text">
+          This diagram has {plan.nodeCount.toLocaleString()} nodes. Mermaid lays
+          diagrams out on the main thread, so rendering it may take up to half a
+          minute and will make the page unresponsive while it works.
+        </p>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => setConfirmed(true)}
+        >
+          Render diagram anyway
+        </button>
+      </div>
+    );
+  } else if (state.kind === "error") {
+    body = (
       <div className="alert alert-error" role="alert">
         <span aria-hidden="true">⚠</span>
         <div>
-          <strong className="alert-title">Diagram could not be rendered</strong>
+          <strong className="alert-title">
+            Unable to render repository diagram.
+          </strong>
           <span className="alert-body">
-            The file tree below still shows the repository structure.
+            The File Tree view still shows the repository structure.
           </span>
         </div>
       </div>
     );
-  }
-
-  if (diagram.kind === "rendering" || diagram.kind === "idle") {
-    return (
+  } else if (state.kind === "rendering") {
+    body = (
       <div className="diagram-placeholder">
         <span className="spinner spinner--large" aria-hidden="true" />
-        <p className="diagram-placeholder__text">Building diagram…</p>
+        <p className="diagram-placeholder__text">Rendering diagram…</p>
       </div>
+    );
+  } else {
+    body = (
+      <div
+        className="diagram-svg-wrapper"
+        // mermaid.render() returns SVG it has already sanitised
+        // (securityLevel: "strict"), and labels are escaped before generation.
+        dangerouslySetInnerHTML={{ __html: state.svg }}
+      />
     );
   }
 
-  // Success — inject the sanitised SVG from mermaid.render()
   return (
-    <div
-      ref={containerRef}
-      className="diagram-svg-wrapper"
-      // mermaid.render returns sanitised SVG; dangerouslySetInnerHTML is
-      // intentional and safe (securityLevel:"loose" already strips scripts).
-      dangerouslySetInnerHTML={{ __html: diagram.svg }}
-    />
+    <div className="diagram-view">
+      {truncationNotice}
+      {depthNotice}
+      {modeSwitch}
+      {body}
+    </div>
   );
 }

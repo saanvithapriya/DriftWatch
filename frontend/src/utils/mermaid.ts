@@ -1,96 +1,118 @@
 /**
- * Phase 2: Mermaid diagram generation utility.
+ * Phase 2: Mermaid diagram generation.
  *
- * Pure function — no API calls, no side effects.
+ * Pure functions — no DOM, no API calls, no side effects. Given the same
+ * tree and options these always produce byte-identical output.
  */
+import type { TreeNode } from "../types/tree";
 
-export interface TreeNode {
-  name: string;
-  path: string;
-  type: "file" | "directory";
-  children?: TreeNode[];
+export type { TreeNode };
+
+export interface MermaidDiagramOptions {
+  /** Label for the root node, e.g. `facebook/react`. */
+  repositoryLabel: string;
+  /**
+   * Omit file nodes and draw only the directory skeleton. Used to keep very
+   * large repositories renderable.
+   */
+  directoriesOnly?: boolean;
+  /**
+   * Stop descending past this depth (1 = the repository's immediate children).
+   * Undefined draws the whole tree.
+   */
+  maxDepth?: number;
 }
 
-/**
- * Converts a path to a stable, unique Mermaid node ID.
- *
- * Rules:
- * - Replace any character that is NOT alphanumeric or underscore with `_`
- * - Prefix with `n_` so the ID always starts with a letter (prevents Mermaid
- *   from rejecting IDs that start with a digit)
- *
- * The result is deterministic: same path → same ID.
- */
-function pathToId(path: string): string {
-  return "n_" + path.replace(/[^A-Za-z0-9_]/g, "_");
-}
+const ROOT_ID = "root";
 
 /**
- * Escapes characters that Mermaid treats as special inside node labels.
+ * Makes a label safe to place inside a double-quoted Mermaid node label.
  *
- * We wrap labels in double-quotes in the generated diagram, so the only
- * characters we need to handle are double-quote itself and the backslash
- * (which is Mermaid's escape character for some renderers).
+ * Mermaid renders labels as HTML, so `<`, `>` and `&` would otherwise be
+ * parsed as markup, and `"` would end the label early. Mermaid's own escape
+ * mechanism is the entity code (`#NN;` / `#name;`), so `#` has to be escaped
+ * first — otherwise the `#` characters introduced by the later replacements
+ * would themselves be re-escaped and the output would be corrupted.
+ *
+ * Everything else the spec lists — [ ] ( ) { } | : ; / \ ' — is inert inside
+ * a quoted label and is deliberately left alone so filenames stay readable.
  */
-function escapeLabel(label: string): string {
+export function escapeLabel(label: string): string {
   return label
-    .replace(/\\/g, "\\\\")   // backslash first
-    .replace(/"/g, '\\"');     // then double-quote
+    .replace(/#/g, "#35;")
+    .replace(/&/g, "#amp;")
+    .replace(/"/g, "#quot;")
+    .replace(/</g, "#lt;")
+    .replace(/>/g, "#gt;")
+    .replace(/[\r\n]+/g, " ");
 }
 
 /**
- * Recursively walks the tree and appends node definitions and edges to the
- * provided arrays.  Node definitions are de-duplicated via `seen`.
- */
-function walk(
-  nodes: TreeNode[],
-  lines: string[],
-  seen: Set<string>
-): void {
-  for (const node of nodes) {
-    const id = pathToId(node.path);
-    const label = escapeLabel(node.name);
-
-    // Emit the node definition only once (guard against duplicate paths).
-    if (!seen.has(id)) {
-      seen.add(id);
-      if (node.type === "directory") {
-        // Rounded rectangle  →  id("label")
-        lines.push(`  ${id}("📁 ${label}")`);
-      } else {
-        // Rectangle  →  id["label"]
-        lines.push(`  ${id}["📄 ${label}"]`);
-      }
-    }
-
-    // Recurse into children and emit edges parent → child.
-    if (node.children && node.children.length > 0) {
-      for (const child of node.children) {
-        const childId = pathToId(child.path);
-        lines.push(`  ${id} --> ${childId}`);
-      }
-      walk(node.children, lines, seen);
-    }
-  }
-}
-
-/**
- * Converts a hierarchical `TreeNode[]` into a Mermaid `graph TD` string.
+ * Converts a hierarchical tree into a Mermaid `graph TD` diagram rooted at a
+ * node representing the repository itself.
  *
- * - Returns `"graph TD"` (a valid but empty diagram) for an empty tree.
- * - Node IDs are derived from `path`, not array indexes, so output is
- *   deterministic across re-runs.
- * - Directories use rounded-rectangle nodes; files use rectangle nodes.
+ * Node IDs are sequential (`node_1`, `node_2`, …) rather than derived from the
+ * path. Deriving an ID by substituting unsafe characters is not injective:
+ * `a-b.txt`, `a_b.txt` and `a.b.txt` would all collapse onto one ID and two of
+ * the three files would silently disappear from the diagram. Allocation order
+ * follows the tree's deterministic ordering, so IDs remain stable across runs.
  */
-export function treeToMermaid(tree: TreeNode[]): string {
-  if (tree.length === 0) {
-    return "graph TD";
-  }
-
+export function generateMermaidDiagram(
+  tree: readonly TreeNode[],
+  options: MermaidDiagramOptions
+): string {
   const lines: string[] = ["graph TD"];
-  const seen = new Set<string>();
+  lines.push(`  ${ROOT_ID}(["${escapeLabel(options.repositoryLabel)}"])`);
 
-  walk(tree, lines, seen);
+  const directoriesOnly = options.directoriesOnly === true;
+  const { maxDepth } = options;
+  const idsByPath = new Map<string, string>();
+  const definedIds = new Set<string>();
+  const emittedEdges = new Set<string>();
+
+  const idFor = (path: string): string => {
+    const existing = idsByPath.get(path);
+    if (existing !== undefined) return existing;
+    const id = `node_${idsByPath.size + 1}`;
+    idsByPath.set(path, id);
+    return id;
+  };
+
+  const walk = (
+    nodes: readonly TreeNode[],
+    parentId: string,
+    depth: number
+  ): void => {
+    if (maxDepth !== undefined && depth > maxDepth) return;
+
+    for (const node of nodes) {
+      if (directoriesOnly && node.type === "file") continue;
+
+      const id = idFor(node.path);
+      const label = escapeLabel(node.name);
+
+      // A well-formed tree holds each path once, but guard anyway so a
+      // malformed tree cannot emit a duplicate definition.
+      if (!definedIds.has(id)) {
+        definedIds.add(id);
+        lines.push(
+          node.type === "directory"
+            ? `  ${id}("📁 ${label}")`
+            : `  ${id}["📄 ${label}"]`
+        );
+      }
+
+      const edge = `  ${parentId} --> ${id}`;
+      if (!emittedEdges.has(edge)) {
+        emittedEdges.add(edge);
+        lines.push(edge);
+      }
+
+      if (node.children.length > 0) walk(node.children, id, depth + 1);
+    }
+  };
+
+  walk(tree, ROOT_ID, 1);
 
   return lines.join("\n");
 }
