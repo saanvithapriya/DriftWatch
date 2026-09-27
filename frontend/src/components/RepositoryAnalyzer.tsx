@@ -1,6 +1,10 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { githubConnectUrl } from "../auth/authApi";
 import { useAuth } from "../auth/AuthContext";
+import { DependencyExplorer } from "../dependencies/DependencyExplorer";
+import { useDependencyAnalysis } from "../dependencies/useDependencyAnalysis";
+import { WorkflowExplorer } from "../workflows/WorkflowExplorer";
+import { useWorkflowAnalysis } from "../workflows/useWorkflowAnalysis";
 import { ApiError, analyzeGithubRepository } from "../services/api";
 import type { RepositoryTree } from "../types/github";
 import { isLikelyGithubRepositoryUrl } from "../utils/githubUrl";
@@ -10,7 +14,7 @@ import { RepositoryDiagram } from "./RepositoryDiagram";
 import { RepositorySummary } from "./RepositorySummary";
 
 type Status = "idle" | "loading" | "success" | "error";
-type View = "tree" | "diagram";
+type View = "tree" | "diagram" | "dependencies" | "workflows";
 
 export function RepositoryAnalyzer() {
   const { user } = useAuth();
@@ -26,6 +30,12 @@ export function RepositoryAnalyzer() {
   // never mutated by navigation — only this path changes, and the visible
   // subtree is derived from it.
   const [currentPath, setCurrentPath] = useState<string>(ROOT_PATH);
+  // The URL that produced the current result. The input stays editable, so the
+  // dependency view must not read from it directly.
+  const [analyzedUrl, setAnalyzedUrl] = useState("");
+  // Bumped on every completed analysis so a re-run of the same URL refreshes
+  // derived views instead of serving a cached result.
+  const [analysisId, setAnalysisId] = useState(0);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -58,6 +68,8 @@ export function RepositoryAnalyzer() {
     try {
       const data = await analyzeGithubRepository(trimmed);
       setResult(data);
+      setAnalyzedUrl(trimmed);
+      setAnalysisId((id) => id + 1);
       // A new repository always starts at its own root.
       setCurrentPath(ROOT_PATH);
       setStatus("success");
@@ -86,6 +98,21 @@ export function RepositoryAnalyzer() {
         ? null
         : createRepositoryRoot(repositoryLabel, buildFileTree(result.tree)),
     [result, repositoryLabel]
+  );
+
+  // Lazy: nothing is requested until the Dependencies tab is first opened,
+  // and the result survives switching away and back.
+  const dependencyState = useDependencyAnalysis(
+    analyzedUrl,
+    view === "dependencies",
+    analysisId
+  );
+
+  // Same pattern: lazy, cached per analysis, invalidated by a re-run.
+  const workflowState = useWorkflowAnalysis(
+    analyzedUrl,
+    view === "workflows",
+    analysisId
   );
 
   const isLoading = status === "loading";
@@ -192,8 +219,8 @@ export function RepositoryAnalyzer() {
             <div className="analyzer-section__header">
               <h3 className="analyzer-section__title">Repository Structure</h3>
               <p className="analyzer-section__desc">
-                Browse every file, or explore the architecture by drilling into
-                directories.
+                Browse every file, explore the architecture, inspect
+                source-file dependencies, or review CI/CD workflows.
               </p>
             </div>
 
@@ -220,9 +247,49 @@ export function RepositoryAnalyzer() {
               >
                 Architecture
               </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-dependencies"
+                aria-selected={view === "dependencies"}
+                aria-controls="panel-dependencies"
+                className={`viewtabs__tab${view === "dependencies" ? " is-active" : ""}`}
+                onClick={() => setView("dependencies")}
+              >
+                Dependencies
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-workflows"
+                aria-selected={view === "workflows"}
+                aria-controls="panel-workflows"
+                className={`viewtabs__tab${view === "workflows" ? " is-active" : ""}`}
+                onClick={() => setView("workflows")}
+              >
+                CI/CD
+              </button>
             </div>
 
-            {view === "tree" ? (
+            {view === "workflows" ? (
+              <div
+                className="card diagram-card"
+                id="panel-workflows"
+                role="tabpanel"
+                aria-labelledby="tab-workflows"
+              >
+                <WorkflowExplorer state={workflowState} />
+              </div>
+            ) : view === "dependencies" ? (
+              <div
+                className="card diagram-card"
+                id="panel-dependencies"
+                role="tabpanel"
+                aria-labelledby="tab-dependencies"
+              >
+                <DependencyExplorer state={dependencyState} />
+              </div>
+            ) : view === "tree" ? (
               <div
                 className="card filetree-card"
                 id="panel-tree"

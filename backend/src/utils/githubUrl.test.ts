@@ -53,6 +53,14 @@ const REJECTED: string[] = [
   "ftp://github.com/a/b",
   "file:///etc/passwd",
   "javascript:alert(1)",
+  // Embedded credentials: host-confusion phishing shape
+  "https://evil.com@github.com/octocat/Hello-World",
+  "https://user:pass@github.com/octocat/Hello-World",
+  "https://github.com@evil.com/octocat/Hello-World",
+  // Non-default ports are not the public GitHub service
+  "https://github.com:8080/octocat/Hello-World",
+  "https://github.com:22/octocat/Hello-World",
+  "http://github.com:3000/octocat/Hello-World",
   // SSRF-style targets
   "http://localhost:5000",
   "http://127.0.0.1",
@@ -135,6 +143,53 @@ test("the throwing wrapper returns owner and repo for valid input", () => {
     parseGithubRepositoryUrlOrThrow("https://github.com/octocat/Hello-World"),
     { owner: "octocat", repo: "Hello-World" },
     "parsed"
+  );
+});
+
+test("a URL carrying credentials is rejected even when the host is github.com", () => {
+  // Regression: `https://evil.com@github.com/o/r` parsed cleanly because only
+  // the hostname was checked. The host is legitimate, but the credential form
+  // is a phishing shape and never appears in a real repository URL.
+  for (const input of [
+    "https://evil.com@github.com/octocat/Hello-World",
+    "https://user:pass@github.com/octocat/Hello-World",
+    "https://:pass@github.com/octocat/Hello-World",
+  ]) {
+    assertEqual(parseGithubRepositoryUrl(input), null, `rejected: ${input}`);
+  }
+});
+
+test("the default port is still accepted, other ports are not", () => {
+  assertEqual(
+    parseGithubRepositoryUrl("https://github.com:443/octocat/Hello-World"),
+    { owner: "octocat", repo: "Hello-World" },
+    "explicit default https port is the same service"
+  );
+  assertEqual(
+    parseGithubRepositoryUrl("http://github.com:80/octocat/Hello-World"),
+    { owner: "octocat", repo: "Hello-World" },
+    "explicit default http port"
+  );
+  for (const input of [
+    "https://github.com:8080/octocat/Hello-World",
+    "https://github.com:22/octocat/Hello-World",
+  ]) {
+    assertEqual(parseGithubRepositoryUrl(input), null, `rejected: ${input}`);
+  }
+});
+
+test("path traversal inside the URL resolves per the URL spec, not into extra segments", () => {
+  // `https://github.com/../../etc/passwd` IS `https://github.com/etc/passwd`
+  // by URL semantics, so it parses as that owner/repo rather than escaping.
+  assertEqual(
+    parseGithubRepositoryUrl("https://github.com/../../etc/passwd"),
+    { owner: "etc", repo: "passwd" },
+    "normalized by the URL parser"
+  );
+  assertEqual(
+    parseGithubRepositoryUrl("https://github.com/octocat/repo/../../evil"),
+    null,
+    "still only two segments are accepted"
   );
 });
 

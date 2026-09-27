@@ -254,4 +254,74 @@ test("output is deterministic across repeated calls", () => {
   );
 });
 
+test("the max-node guard trips at exactly the documented boundary", () => {
+  const make = (count: number) => {
+    const entries: RepositoryTreeNode[] = [];
+    for (let i = 0; i < count; i++) entries.push(F(`wide/f${String(i).padStart(4, "0")}.ts`));
+    return at(repo(...entries), "wide");
+  };
+
+  for (const count of [MAX_DIAGRAM_NODES - 1, MAX_DIAGRAM_NODES]) {
+    const out = generateMermaidDiagram(make(count), WITH_FILES);
+    assertEqual(out.exceededMaxNodes, false, `${count} nodes are drawn`);
+    assertEqual(out.nodeCount, count, `${count} counted`);
+    assert(out.definition !== null, `${count} produced a diagram`);
+  }
+
+  const over = generateMermaidDiagram(make(MAX_DIAGRAM_NODES + 1), WITH_FILES);
+  assertEqual(over.exceededMaxNodes, true, "one past the limit is refused");
+  assertEqual(over.definition, null, "nothing generated");
+  assertEqual(over.nodeCount, MAX_DIAGRAM_NODES + 1, "count still reported honestly");
+});
+
+test("very wide directories are refused rather than drawn slowly", () => {
+  for (const count of [200, 500, 1000]) {
+    const entries: RepositoryTreeNode[] = [];
+    for (let i = 0; i < count; i++) entries.push(F(`wide/f${i}.ts`));
+    const out = generateMermaidDiagram(at(repo(...entries), "wide"), WITH_FILES);
+    assertEqual(out.exceededMaxNodes, true, `${count} refused`);
+  }
+});
+
+test("Mermaid metacharacters in filenames cannot break out of a label", () => {
+  const hostile = [
+    "arrow-->target.ts",
+    "graph TD.ts",
+    "pipe|char.ts",
+    "semi;colon.ts",
+    "back`tick.ts",
+    "brace{}.ts",
+    "bracket[].ts",
+    "paren().ts",
+    "subgraph end.ts",
+    "click me.ts",
+    "style fill:red.ts",
+  ];
+  const tree = repo(...hostile.map((name) => F(`evil/${name}`)));
+  const out = generateMermaidDiagram(at(tree, "evil"), WITH_FILES);
+  const definition = out.definition as string;
+
+  // Every emitted line must be the header, a node definition or an edge.
+  for (const line of definition.split("\n")) {
+    const ok =
+      line === "graph TD" ||
+      /^ {2}(root|node_\d+)[[("]/.test(line) ||
+      /^ {2}(root|node_\d+) --> node_\d+$/.test(line);
+    assert(ok, `no stray directive emitted: ${JSON.stringify(line)}`);
+  }
+
+  // A label must never contain an unescaped quote, the only way to terminate
+  // it early and inject syntax.
+  for (const line of definition.split("\n").filter((l) => l.includes("\u{1F4C4}"))) {
+    const inner = /"([^"]*)"/.exec(line)?.[1] ?? "";
+    assert(!inner.includes('"'), `label is closed exactly once: ${line}`);
+  }
+});
+
+test("newlines in a label are flattened so they cannot inject a new statement", () => {
+  assertEqual(escapeLabel("a\nb"), "a b", "newline flattened");
+  assertEqual(escapeLabel("a\r\nb"), "a b", "CRLF flattened");
+  assert(!escapeLabel("a\n  root-->evil").includes("\n"), "no newline survives");
+});
+
 await report("architecture-explorer Mermaid generator tests");

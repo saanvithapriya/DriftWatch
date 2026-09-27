@@ -195,4 +195,52 @@ test("an empty tree normalizes to an empty array", () => {
   assertEqual(normalizeTreeEntries([]), [], "empty");
 });
 
+test("the complete GitHub status matrix maps to documented semantics", () => {
+  // Every status the QA matrix lists, and what DriftWatch reports for it.
+  const matrix: Array<[number, number, string]> = [
+    [301, 502, "redirects are followed by Octokit; a surfaced one is upstream trouble"],
+    [302, 502, "same"],
+    [304, 502, "not-modified is unexpected here"],
+    [400, 502, "a bad request to GitHub is our problem, reported as upstream failure"],
+    [401, 401, "authentication"],
+    [404, 404, "privacy-preserving not found"],
+    [409, 502, "conflict is only special-cased for the empty-repository tree call"],
+    [422, 502, "unprocessable"],
+    [429, 429, "rate limit"],
+    [500, 502, "upstream"],
+    [502, 502, "upstream"],
+    [503, 502, "upstream"],
+    [504, 502, "upstream"],
+  ];
+
+  for (const [status, expected, why] of matrix) {
+    const mapped = toAppError(octokitError(status));
+    assertEqual(mapped.statusCode, expected, `${status} -> ${expected} (${why})`);
+  }
+});
+
+test("no mapped status ever exposes the upstream status or body", () => {
+  for (const status of [301, 400, 401, 403, 404, 409, 422, 429, 500, 503]) {
+    const original = octokitError(status, {
+      message: `Upstream said: secret-detail token=ghp_abcdefghijklmnop at https://api.github.com/x`,
+    });
+    const mapped = toAppError(original);
+    assert(!mapped.message.includes("secret-detail"), `${status}: no upstream detail`);
+    assert(!mapped.message.includes("ghp_"), `${status}: no credential shape`);
+    assert(!mapped.message.includes("api.github.com"), `${status}: no upstream URL`);
+    assert(mapped.message.length < 120, `${status}: message stays short and human`);
+  }
+});
+
+test("every mapped error carries one of the documented statuses", () => {
+  const allowed = new Set([401, 403, 404, 429, 502]);
+  for (let status = 400; status <= 599; status++) {
+    const mapped = toAppError(octokitError(status));
+    assert(
+      allowed.has(mapped.statusCode),
+      `${status} mapped to an undocumented ${mapped.statusCode}`
+    );
+  }
+});
+
 await report("githubService error mapping / normalization tests");

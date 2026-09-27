@@ -25,8 +25,16 @@ complete file tree.
 can be analyzed too. Anonymous public analysis is unchanged, and the GitHub
 credential never reaches the browser.
 
-Code intelligence, dependency analysis and persistence do not exist yet —
-those belong to later phases.
+**Phase 4** adds code parsing: Tree-sitter reads the repository's JavaScript
+and TypeScript and builds an interactive React Flow graph of which source
+files import which.
+
+**Phase 5** adds CI/CD: GitHub Actions workflows are parsed and drawn as job
+dependency graphs, with each job's steps alongside. Workflows are analyzed
+statically and never executed.
+
+Function call graphs, Git history and persistence do not exist yet — those
+belong to later phases.
 
 ## Project Structure
 
@@ -475,6 +483,401 @@ is cleared and the frontend returns to its signed-out state.
 5. Add rate limiting to the auth routes.
 6. Rotate the client secret through a secret manager rather than `.env`.
 
+## Phase 4 — Code Parsing and Dependency Graph
+
+Phase 4 parses the repository's JavaScript and TypeScript with Tree-sitter and
+draws which source files import which, as an interactive React Flow graph.
+
+> **Phase 4 analyzes file/module dependencies. It does not analyze function
+> calls.** The graph answers "which file imports which file?", not "which
+> function calls which function". Call graphs belong to a later phase.
+
+```text
+GitHub repository
+      ↓
+Repository tree                    (Phase 1)
+      ↓
+Supported source files             .js .jsx .ts .tsx
+      ↓
+Source contents                    one archive download
+      ↓
+Tree-sitter                        parse per grammar
+      ↓
+Import extraction                  module specifiers
+      ↓
+Dependency resolution              against the repository tree
+      ↓
+Deterministic graph
+      ↓
+React Flow                         interactive explorer
+```
+
+This sits **alongside** the Phase 2 Mermaid architecture explorer, which is
+unchanged. The application now has three views: **File Tree** (every file),
+**Architecture** (Mermaid hierarchy, drill-down), and **Dependencies** (React
+Flow import graph).
+
+### Supported languages
+
+| Extension | Grammar |
+| --- | --- |
+| `.js` | JavaScript |
+| `.jsx` | JavaScript (covers JSX) |
+| `.ts` | TypeScript |
+| `.tsx` | TSX |
+
+Any other extension is skipped, never parsed as JavaScript. A Python or Go
+file is simply not analyzed.
+
+### Supported import syntax
+
+```js
+import foo from "./foo";              // default
+import { foo } from "./foo";          // named
+import { foo as bar } from "./foo";   // aliased
+import * as utils from "./utils";     // namespace
+import type { User } from "./types";  // type-only
+import "./styles.css";                // side effect
+import("./lazy");                     // dynamic
+require("./foo");                     // CommonJS
+export { foo } from "./foo";          // re-export
+export * from "./foo";                // star re-export
+export * as ns from "./foo";          // namespace re-export
+```
+
+A specifier that is not a string literal — `require(someVariable)` — is not a
+static dependency and is deliberately ignored rather than guessed at.
+
+### Internal resolution
+
+Relative specifiers are resolved against **the GitHub repository tree**, never
+the local filesystem, and a target file is never invented. Candidates are
+tried in this fixed order, so resolution is deterministic when more than one
+could match:
+
+```text
+./foo  →  foo            (exact)
+          foo.ts  foo.tsx  foo.js  foo.jsx
+          foo/index.ts  foo/index.tsx  foo/index.js  foo/index.jsx
+```
+
+`../` and `../../` are supported. Paths are normalized to POSIX form, and
+resolution **cannot escape the repository root** — `../../../etc/passwd`
+resolves to nothing regardless of what exists.
+
+### External and unresolved imports
+
+A bare specifier (`react`, `lodash/merge`, `@scope/pkg`) is classified
+**external** and never becomes a repository node; only a count is kept. This
+holds even if a file of the same name exists, so `import "react"` never
+attaches to a local `react.ts`.
+
+A specifier that looked like a repository path but matched no file is
+**unresolved** and is counted, not guessed.
+
+### Path aliases
+
+Aliases are read from `tsconfig.json` or `jsconfig.json`, but only in the
+unambiguous single-target wildcard form:
+
+```json
+{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }
+```
+
+A mapping with several targets, or without a trailing `/*`, is skipped — the
+import is reported unresolved rather than attached to a guessed file. Relative
+imports never depend on alias support.
+
+### Source acquisition
+
+Source is fetched with **one** API call for the whole repository — a tarball
+download — streamed through gunzip and tar, keeping only the selected paths in
+memory. Requesting blobs individually would be an N+1 against an API that
+allows 60 anonymous requests an hour, so a few hundred files would exhaust the
+quota outright.
+
+Total GitHub cost per analysis is **three calls regardless of repository
+size**: metadata, recursive tree, archive.
+
+Authentication flows exactly as in Phase 3 — the credential reaches GitHub and
+stops there. **The parser only ever receives source text**; no token, request,
+session or user is passed into it.
+
+### Analysis limits
+
+Configurable in `backend/.env` (see `.env.example`). Reaching one produces a
+partial analysis flagged `truncated`, never a failure, and the UI says so:
+
+| Variable | Default | Protects |
+| --- | --- | --- |
+| `DRIFTWATCH_MAX_SOURCE_FILES` | 600 | parsing time, graph size |
+| `DRIFTWATCH_MAX_FILE_SIZE_BYTES` | 512 KB | memory |
+| `DRIFTWATCH_MAX_TOTAL_SOURCE_BYTES` | 24 MB | memory |
+| `DRIFTWATCH_MAX_REPO_SIZE_KB` | 250 MB | download time |
+
+File selection is sorted by path and taken in order, so the same repository
+snapshot always yields the same selection.
+
+### API
+
+`POST /api/github/dependencies`
+
+```json
+{ "url": "https://github.com/owner/repository" }
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "repository": { "owner": "reduxjs", "name": "redux", "defaultBranch": "master" },
+    "nodes": [{ "id": "src/App.tsx", "path": "src/App.tsx", "label": "App.tsx", "type": "file" }],
+    "edges": [{
+      "id": "src/App.tsx->src/components/Header.tsx",
+      "source": "src/App.tsx",
+      "target": "src/components/Header.tsx",
+      "type": "internal"
+    }],
+    "stats": {
+      "filesAnalyzed": 122, "filesSkipped": 0, "filesFailed": 0,
+      "dependenciesFound": 340, "internalDependencies": 146,
+      "externalImports": 176, "externalPackages": 54,
+      "unresolvedImports": 15, "truncated": false
+    }
+  }
+}
+```
+
+An edge means **source imports target**. Errors reuse the existing envelope
+and status semantics (400 / 401 / 403 / 404 / 429 / 502), and
+`POST /api/github/tree` is unchanged.
+
+### Determinism
+
+Node ids are repository paths and edge ids are `source->target`, so both are
+stable. Nodes and edges are sorted by id, duplicate edges are collapsed (a
+module imported twice yields one edge), and nothing depends on object
+insertion order. The same repository snapshot always produces the same graph.
+
+Circular dependencies are valid input: a cycle yields the nodes and both
+directed edges. Graph construction is a single pass over parsed files and the
+layout is an iterative layering pass, so no cycle can recurse forever.
+
+### The Dependencies view
+
+- **Statistics** — files analyzed, internal dependencies, external packages,
+  unresolved imports, and files that failed to parse.
+- **Filtering** — free-text path search and a top-level directory selector,
+  both clearable. An edge is kept only when both endpoints survive, so the
+  graph never shows a dangling edge.
+- **Node details** — click a node for its path, dependency and dependent
+  counts, and the lists of both.
+- **Focus** — reduce the graph to one file and its direct neighbourhood.
+- **Size protection** — above `MAX_DEPENDENCY_GRAPH_NODES` (200) the graph is
+  *not* drawn. Rather than showing an arbitrary subset, the view explains the
+  situation and asks for a filter. The page stays responsive throughout.
+
+### Security
+
+Repository code is untrusted **data**. It is never executed: no `eval`, no
+`new Function`, no dynamic import of repository code, no npm install, no build
+or shell commands. Tree-sitter only parses text, and archive entries are never
+written to disk.
+
+Repository-controlled strings — file paths and names — are rendered as text by
+React. `dangerouslySetInnerHTML` is not used for any Phase 4 content. The
+Phase 2 escaping and path protections are unchanged.
+
+### Known limitations
+
+- Only `.js`, `.jsx`, `.ts`, `.tsx`. Not `.mjs`, `.cjs`, `.mts`, `.cts`, Vue
+  or Svelte single-file components.
+- `package.json` `imports`/`exports` maps, webpack and Vite alias config are
+  not read; only `tsconfig.json`/`jsconfig.json` paths.
+- Import specifiers built at runtime are ignored by design.
+- Selection under the file limit is alphabetical, so a partial analysis of a
+  large repository covers an alphabetical prefix rather than the "most
+  important" files.
+- Resolution is case-sensitive, matching the GitHub tree.
+
+## Phase 5 — GitHub Actions CI/CD Visualization
+
+Phase 5 reads a repository's GitHub Actions workflows and draws each one's job
+dependency graph, with the selected job's steps alongside.
+
+> **DriftWatch statically analyzes GitHub Actions workflow definitions. It
+> never executes workflows, actions, shell commands, or repository code.**
+
+```text
+Repository tree                    (Phase 1)
+      ↓
+.github/workflows/*.yml|*.yaml     discovery only in that directory
+      ↓
+Workflow source                    one archive download (Phase 4 acquisition)
+      ↓
+YAML parse                         yaml 1.2, never evaluated
+      ↓
+Normalized workflow model
+      ↓
+Mermaid flowchart                  JOB → JOB
+      ↓
+CI/CD explorer
+```
+
+The application now has four views: **File Tree**, **Architecture** (Phase 2,
+Mermaid), **Dependencies** (Phase 4, React Flow) and **CI/CD** (Phase 5,
+Mermaid). The earlier views are unchanged.
+
+### Supported workflow files
+
+Only `.github/workflows/*.yml` and `*.yaml` are read — nested directories and
+the rest of the repository are never scanned for workflow-shaped files. A
+repository with no workflows is a valid, complete result, not an error.
+
+### The `on:` trap
+
+Under YAML 1.1 the key `on` is a boolean, so a careless parser turns every
+workflow's `on:` block into `true:` and silently loses all triggers.
+DriftWatch parses with `yaml` (YAML 1.2), where `on` stays a string key, and a
+test asserts this for the scalar, list, map, quoted and `schedule` forms.
+
+### What is extracted
+
+| From | Fields |
+| --- | --- |
+| Workflow | `name` (or derived from the filename: `ci.yml` → `CI`), triggers, jobs |
+| Triggers | event name, plus `branches`, `branches-ignore`, `tags`, `paths`, `types`, `cron` |
+| Job | `id`, `name` (or the id), `needs`, `runs-on`, `if`, `environment`, `timeout-minutes`, `continue-on-error`, `uses`, matrix, steps |
+| Step | `id`, `name`, `uses`, `run`, `if`, and whether `with`/`env` are present |
+
+`needs` is accepted as both a scalar (`needs: build`) and a list
+(`needs: [build, lint]`), deduplicated and sorted. **Only an explicit `needs`
+creates an edge** — nothing is inferred from the order jobs appear in.
+
+### Matrix and reusable workflows
+
+A `strategy.matrix` is *described*, never expanded: `node: [18, 20, 22]` with
+`os: [ubuntu, windows]` shows as `matrix ×6` on the node and
+`node = 18, 20, 22 · os = …` in the details, rather than becoming six jobs.
+
+A job with `uses:` (`./.github/workflows/deploy.yml` or
+`org/repo/.github/workflows/deploy.yml@main`) is recorded as a reusable-workflow
+job and labelled as such. It is never followed or recursively analyzed.
+
+### Secrets
+
+Secret references are never resolved, and no GitHub API is called to read
+secrets. `with:` and `env:` blocks routinely contain
+`${{ secrets.API_KEY }}`, so **only their presence is carried** — the values
+never enter the DTO at all. A test asserts that secret names from a fixture do
+not appear anywhere in the serialized response.
+
+### The job graph
+
+```text
+flowchart TD
+  job_1["Build<br/>ubuntu-latest<br/>2 steps"]
+  job_2["Deploy<br/>ubuntu-latest<br/>1 step"]
+  job_1 --> job_2
+```
+
+The primary graph is **job → job** only. Steps never become graph nodes, so a
+workflow with hundreds of steps still produces a small diagram; the steps live
+in the details panel. Node ids are sequential (`job_1`, `job_2`, …) assigned in
+the jobs' sorted order, so they are deterministic and cannot collide however
+exotic a job id is. A `needs` naming a job that is not in the workflow is
+skipped rather than turned into an invented node.
+
+### Security
+
+Workflow files are untrusted data. Every label goes through the same
+`escapeLabel` used by Phase 2, and Mermaid runs with `securityLevel: "strict"`
+and `htmlLabels: false`. A job named `<script>alert(1)</script>` renders as
+that literal text in both the diagram and the UI.
+
+Tested against hostile values including `<script>`, `<img onerror>`, `<svg>`,
+`"] --> evil["`, backticks, pipes, braces, `-->`, `flowchart TD` and embedded
+newlines: none can inject a node, an edge, a directive or HTML. No `eval`,
+`new Function`, `child_process`, `exec` or `spawn` is used anywhere in workflow
+processing.
+
+### Limits
+
+| Variable | Default | Protects |
+| --- | --- | --- |
+| `DRIFTWATCH_MAX_WORKFLOWS` | 50 | parse time, response size |
+| `DRIFTWATCH_MAX_JOBS_PER_WORKFLOW` | 100 | diagram size |
+| `DRIFTWATCH_MAX_STEPS_PER_JOB` | 100 | response size |
+
+Reaching a limit produces a partial result flagged `truncated`, and the UI says
+so. A single unreadable workflow is reported with a `parseError` and does not
+stop the others from being analyzed.
+
+### API
+
+`POST /api/github/workflows`
+
+```json
+{ "url": "https://github.com/owner/repository" }
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "repository": { "owner": "…", "name": "…", "defaultBranch": "…" },
+    "workflows": [
+      {
+        "path": ".github/workflows/ci.yml",
+        "name": "CI",
+        "triggers": [{ "event": "push", "branches": ["main"] }],
+        "jobs": [
+          {
+            "id": "build", "name": "Build", "needs": [],
+            "runsOn": "ubuntu-latest",
+            "steps": [{ "uses": "actions/checkout@v4", "hasWith": false, "hasEnv": false }],
+            "stepCount": 1, "stepsTruncated": false
+          }
+        ],
+        "jobCount": 1, "jobsTruncated": false
+      }
+    ],
+    "stats": {
+      "workflowsFound": 1, "workflowsAnalyzed": 1,
+      "workflowsFailed": 0, "truncated": false
+    }
+  }
+}
+```
+
+URL validation, authentication and error semantics (400/401/403/404/429/502)
+are the existing shared ones — nothing is duplicated. `POST /api/github/tree`
+and `POST /api/github/dependencies` are unchanged.
+
+### GitHub request cost
+
+Three API calls per analysis regardless of how many workflows, jobs or steps a
+repository has: repository metadata, the recursive tree, and one archive
+download — the same acquisition Phase 4 uses. There is no per-workflow,
+per-job or per-step request.
+
+### Caching
+
+Workflow analysis is lazy (nothing is requested until the CI/CD tab is first
+opened) and cached per analysis. Moving between Architecture, Dependencies and
+CI/CD issues **no** further requests, while re-analyzing the same repository
+invalidates the cache — the key is the analysis identity, not the URL alone.
+
+### Known limitations
+
+- Reusable workflows are recorded but not recursively analyzed.
+- Composite action internals are not read; `uses:` is shown as written.
+- Expressions (`${{ … }}`) are displayed verbatim, never evaluated, so a job
+  name built from an expression shows the expression.
+- `include`/`exclude` matrix entries are noted as present but not itemized.
+- Workflow-level `env`, `defaults`, `concurrency` and `permissions` are not
+  modelled.
+
 ## Frontend
 
 The home page provides a repository URL field and an **Analyze Repository**
@@ -492,9 +895,11 @@ npm test --workspace=frontend
 ```
 
 This covers the tree builder and its size metadata, the Mermaid generator
-(including ID collisions, escaping, the max-node guard and determinism), and
-architecture-view navigation. The backend has its own suite for URL parsing and
-GitHub error mapping:
+(including ID collisions, escaping, the max-node guard and determinism),
+architecture-view navigation, and the dependency graph model (layout,
+filtering, focus). The backend has its own suite for URL parsing, GitHub error
+mapping, credential isolation, the auth flow, Tree-sitter extraction,
+dependency resolution and graph construction:
 
 ```bash
 npm test --workspace=backend

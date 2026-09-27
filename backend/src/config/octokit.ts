@@ -5,6 +5,23 @@ import { env } from "./env.js";
 const USER_AGENT = "repo-intelligence-platform";
 
 /**
+ * Rate-limit handling.
+ *
+ * The `octokit` package bundles the throttling plugin, whose default handler
+ * *waits for the rate-limit window to reset and then retries*. With the
+ * anonymous limit of 60 requests an hour that means a request can hang for the
+ * best part of an hour, and the user just watches a spinner.
+ *
+ * Returning false declines the retry, so the 403/429 propagates immediately
+ * and `toAppError` turns it into a prompt, honest "rate limit exceeded"
+ * response the UI can show.
+ */
+export const throttleOptions = {
+  onRateLimit: (): boolean => false,
+  onSecondaryRateLimit: (): boolean => false,
+};
+
+/**
  * The anonymous client is shared because it carries no user identity: it is
  * either unauthenticated or uses the server's own optional GITHUB_TOKEN, which
  * exists only to raise the rate limit.
@@ -19,6 +36,7 @@ export function getOctokit(): Octokit {
     anonymousClient = new Octokit({
       auth: env.githubToken,
       userAgent: USER_AGENT,
+      throttle: throttleOptions,
     });
   }
 
@@ -37,6 +55,7 @@ export function getAuthenticatedOctokit(credential: GithubCredential): Octokit {
   return new Octokit({
     auth: credential.token,
     userAgent: USER_AGENT,
+    throttle: throttleOptions,
   });
 }
 

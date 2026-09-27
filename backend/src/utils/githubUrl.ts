@@ -40,6 +40,15 @@ export function parseGithubRepositoryUrl(
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   if (!GITHUB_HOSTS.has(url.hostname.toLowerCase())) return null;
 
+  // Embedded credentials (`https://user:pass@github.com/...`) are a phishing
+  // pattern and never appear in a real repository URL. The host is genuinely
+  // github.com here, so this is rejected for hygiene rather than necessity.
+  if (url.username !== "" || url.password !== "") return null;
+
+  // A non-default port is not the public GitHub service, whatever the host
+  // says. `url.port` is empty for the scheme's default port.
+  if (url.port !== "") return null;
+
   const segments = url.pathname.split("/").filter((segment) => segment !== "");
   if (segments.length !== 2) return null;
 

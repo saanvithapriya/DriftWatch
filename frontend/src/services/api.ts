@@ -1,4 +1,12 @@
+import type { DependencyAnalysis } from "../types/dependencies";
+import type { WorkflowAnalysis } from "../types/workflows";
 import type { GithubTreeResponse, RepositoryTree } from "../types/github";
+import {
+  parseDependencyAnalysis,
+  parseRepositoryTree,
+  parseWorkflowAnalysis,
+  readErrorMessage,
+} from "./responseContract";
 import type { HealthResponse } from "../types/health";
 
 export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
@@ -37,59 +45,6 @@ export async function request(path: string, init?: RequestInit): Promise<Respons
   }
 }
 
-/** Reads the backend's `{ success: false, message }` shape, if present. */
-function readErrorMessage(payload: unknown): string | null {
-  if (typeof payload === "object" && payload !== null) {
-    const message = (payload as { message?: unknown }).message;
-    if (typeof message === "string" && message !== "") return message;
-  }
-  return null;
-}
-
-/**
- * Confirms a payload really is a `RepositoryTree` before it reaches the UI.
- *
- * Without this, a backend that answered `{ success: true }` with the wrong
- * shape would propagate `undefined` into the rendering code and take the whole
- * React tree down with an uncaught TypeError, leaving a blank page and no way
- * to recover. A shape mismatch is reported as an ordinary error instead.
- */
-function parseRepositoryTree(payload: unknown): RepositoryTree | null {
-  if (typeof payload !== "object" || payload === null) return null;
-  const data = payload as Record<string, unknown>;
-
-  const repository = data.repository;
-  if (typeof repository !== "object" || repository === null) return null;
-  const repo = repository as Record<string, unknown>;
-  if (
-    typeof repo.owner !== "string" ||
-    typeof repo.name !== "string" ||
-    typeof repo.defaultBranch !== "string"
-  ) {
-    return null;
-  }
-
-  if (!Array.isArray(data.tree)) return null;
-  for (const node of data.tree) {
-    if (typeof node !== "object" || node === null) return null;
-    const entry = node as Record<string, unknown>;
-    if (typeof entry.path !== "string") return null;
-    if (entry.type !== "file" && entry.type !== "directory") return null;
-  }
-
-  if (typeof data.truncated !== "boolean") return null;
-
-  return {
-    repository: {
-      owner: repo.owner,
-      name: repo.name,
-      defaultBranch: repo.defaultBranch,
-    },
-    tree: data.tree as RepositoryTree["tree"],
-    truncated: data.truncated,
-  };
-}
-
 export async function getHealth(): Promise<HealthResponse> {
   const response = await request("/api/health");
 
@@ -125,6 +80,68 @@ export async function analyzeGithubRepository(
   }
 
   const data = parseRepositoryTree(body.data);
+  if (data === null) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  return data;
+}
+
+/** Phase 4: source-file dependency graph for a repository. */
+export async function analyzeDependencies(
+  url: string
+): Promise<DependencyAnalysis> {
+  const response = await request("/api/github/dependencies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      readErrorMessage(payload) ?? `Request failed with status ${response.status}`
+    );
+  }
+
+  const body = payload as { success?: unknown; data?: unknown } | null;
+  if (body === null || body.success !== true) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  const data = parseDependencyAnalysis(body.data);
+  if (data === null) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  return data;
+}
+
+/** Phase 5: GitHub Actions workflow analysis for a repository. */
+export async function analyzeWorkflows(url: string): Promise<WorkflowAnalysis> {
+  const response = await request("/api/github/workflows", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      readErrorMessage(payload) ?? `Request failed with status ${response.status}`
+    );
+  }
+
+  const body = payload as { success?: unknown; data?: unknown } | null;
+  if (body === null || body.success !== true) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  const data = parseWorkflowAnalysis(body.data);
   if (data === null) {
     throw new Error("Unexpected response from the server");
   }

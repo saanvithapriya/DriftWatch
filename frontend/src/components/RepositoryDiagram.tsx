@@ -5,37 +5,23 @@
  * directory at a time and lets the user drill down. All navigation is local:
  * it re-reads the already-fetched tree and never issues a request.
  *
- * Diagram *generation* lives in `utils/mermaid.ts`; this component owns
- * Mermaid initialisation, rendering, and the surrounding UI.
+ * Diagram *generation* lives in `utils/mermaid.ts` and rendering in
+ * `utils/mermaidRender.ts`; this component owns the surrounding UI.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import mermaid from "mermaid";
 import type { TreeNode } from "../types/tree";
-import { ROOT_PATH, findNodeByPath, parentPath, pathSegments } from "../utils/fileTree";
+import {
+  ROOT_PATH,
+  findNodeByPath,
+  parentPath,
+  pathSegments,
+} from "../utils/fileTree";
 import {
   MAX_DIAGRAM_NODES,
   describeDirectory,
   generateMermaidDiagram,
 } from "../utils/mermaid";
-
-let mermaidInitialised = false;
-
-function ensureMermaidInitialised(): void {
-  if (mermaidInitialised) return;
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: "dark",
-    // "strict" sanitises the rendered SVG. Labels come from repository
-    // filenames, i.e. untrusted input, so it stays on.
-    securityLevel: "strict",
-    // useMaxWidth would scale a wide graph down to the card width, which makes
-    // diagrams unreadable. Keep the natural size and let the wrapper scroll.
-    flowchart: { htmlLabels: false, useMaxWidth: false },
-  });
-  mermaidInitialised = true;
-}
-
-let diagramCounter = 0;
+import { nextDiagramId, renderMermaid } from "../utils/mermaidRender";
 
 type DiagramState =
   | { kind: "rendering" }
@@ -83,13 +69,8 @@ export function RepositoryDiagram({
     let cancelled = false;
     setState({ kind: "rendering" });
 
-    ensureMermaidInitialised();
-    diagramCounter += 1;
-    const id = `repository-diagram-${diagramCounter}`;
-
-    mermaid
-      .render(id, diagram.definition)
-      .then(({ svg }) => {
+    renderMermaid(nextDiagramId("repository-diagram"), diagram.definition)
+      .then((svg) => {
         if (!cancelled) setState({ kind: "success", svg });
       })
       .catch((error: unknown) => {
