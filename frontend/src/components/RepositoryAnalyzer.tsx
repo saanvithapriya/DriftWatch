@@ -1,20 +1,31 @@
-import { useState, type FormEvent } from "react";
-import { analyzeGithubRepository } from "../services/api";
+import { useMemo, useState, type FormEvent } from "react";
+import { githubConnectUrl } from "../auth/authApi";
+import { useAuth } from "../auth/AuthContext";
+import { ApiError, analyzeGithubRepository } from "../services/api";
 import type { RepositoryTree } from "../types/github";
 import { isLikelyGithubRepositoryUrl } from "../utils/githubUrl";
-import { buildFileTree } from "../utils/fileTree";
+import { ROOT_PATH, buildFileTree, createRepositoryRoot } from "../utils/fileTree";
 import { FileTree } from "./FileTree";
 import { RepositoryDiagram } from "./RepositoryDiagram";
 import { RepositorySummary } from "./RepositorySummary";
-import type { TreeNode } from "../utils/mermaid";
 
 type Status = "idle" | "loading" | "success" | "error";
+type View = "tree" | "diagram";
 
 export function RepositoryAnalyzer() {
+  const { user } = useAuth();
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<RepositoryTree | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
+  // Phase 1's file tree stays the default view; the diagram is opt-in, which
+  // also means Mermaid does no work until the user asks for it.
+  const [view, setView] = useState<View>("tree");
+  // Where the architecture view is currently pointing. The repository tree is
+  // never mutated by navigation — only this path changes, and the visible
+  // subtree is derived from it.
+  const [currentPath, setCurrentPath] = useState<string>(ROOT_PATH);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -24,6 +35,7 @@ export function RepositoryAnalyzer() {
     if (trimmed === "") {
       setStatus("error");
       setResult(null);
+      setErrorStatus(null);
       setError("Please enter a GitHub repository URL.");
       return;
     }
@@ -31,6 +43,7 @@ export function RepositoryAnalyzer() {
     if (!isLikelyGithubRepositoryUrl(trimmed)) {
       setStatus("error");
       setResult(null);
+      setErrorStatus(null);
       setError(
         "Enter a repository URL in the form https://github.com/owner/repository"
       );
@@ -39,11 +52,14 @@ export function RepositoryAnalyzer() {
 
     setStatus("loading");
     setError(null);
+    setErrorStatus(null);
     setResult(null);
 
     try {
       const data = await analyzeGithubRepository(trimmed);
       setResult(data);
+      // A new repository always starts at its own root.
+      setCurrentPath(ROOT_PATH);
       setStatus("success");
     } catch (caught) {
       setError(
@@ -51,27 +67,47 @@ export function RepositoryAnalyzer() {
           ? caught.message
           : "Failed to fetch GitHub repository"
       );
+      setErrorStatus(caught instanceof ApiError ? caught.status : null);
       setStatus("error");
     }
   }
 
-  // TODO: Replace buildFileTree(result.tree) with the real hierarchical
-  // TreeNode[] once the tree-processing workstream provides it.
-  const diagramTree: TreeNode[] | null =
-    result === null ? null : (buildFileTree(result.tree) as TreeNode[]);
+  const repositoryLabel =
+    result === null
+      ? ""
+      : `${result.repository.owner}/${result.repository.name}`;
+
+  // Built once per analysis: the hierarchy, its size metadata, and the
+  // synthetic repository root that navigation starts from. Both views read
+  // from this same structure rather than keeping their own copy.
+  const root = useMemo(
+    () =>
+      result === null
+        ? null
+        : createRepositoryRoot(repositoryLabel, buildFileTree(result.tree)),
+    [result, repositoryLabel]
+  );
 
   const isLoading = status === "loading";
   const hasError = status === "error" && error !== null;
+  // 404 is GitHub deliberately hiding a private repository's existence, so the
+  // hint is phrased as a possibility and never confirms that the repo exists.
+  const mayNeedAccess =
+    hasError && errorStatus !== null && [401, 403, 404].includes(errorStatus);
+
+  function openInDiagram(path: string): void {
+    setCurrentPath(path);
+    setView("diagram");
+  }
 
   return (
     <div className="analyzer-layout">
-
       {/* ── Analyzer card ── */}
       <section className="card analyzer-card" aria-label="Repository analyzer">
         <div className="card-header">
           <h2 className="card-title">Analyze GitHub Repository</h2>
           <p className="card-desc">
-            Enter a public GitHub repository URL to analyze its structure.
+            Enter a GitHub repository URL to analyze its structure.
           </p>
         </div>
 
@@ -102,18 +138,38 @@ export function RepositoryAnalyzer() {
               </button>
             </div>
             <p className="form-hint">
-              Public repositories only · No authentication required
+              {user === null
+                ? "Public repositories · Connect GitHub to analyze private ones"
+                : `Signed in as ${user.login} · public and accessible private repositories`}
             </p>
           </div>
         </form>
 
-        {/* Error state */}
         {hasError && (
           <div className="alert alert-error analyzer-error" role="alert">
             <span aria-hidden="true">⚠</span>
             <div>
-              <strong className="alert-title">Unable to analyze repository</strong>
+              <strong className="alert-title">
+                Unable to analyze repository
+              </strong>
               <span className="alert-body">{error}</span>
+              {mayNeedAccess && (
+                <span className="alert-body">
+                  {user === null ? (
+                    <>
+                      If it is private,{" "}
+                      <a href={githubConnectUrl()}>connect GitHub</a> and make
+                      sure your account has access.
+                    </>
+                  ) : (
+                    <>
+                      Signed in as {user.login}. Make sure this account has
+                      access to the repository and that the DriftWatch GitHub
+                      App is installed on it.
+                    </>
+                  )}
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -127,77 +183,94 @@ export function RepositoryAnalyzer() {
         </div>
       )}
 
-      {/* ── Success states ── */}
-      {status === "success" && result !== null && (
+      {/* ── Success ── */}
+      {status === "success" && result !== null && root !== null && (
         <>
-          {/* Repository summary */}
           <RepositorySummary result={result} />
 
-          {/* Mermaid visualization */}
-          <section className="analyzer-section" aria-label="Repository structure diagram">
+          <section className="analyzer-section" aria-label="Repository structure">
             <div className="analyzer-section__header">
               <h3 className="analyzer-section__title">Repository Structure</h3>
               <p className="analyzer-section__desc">
-                Visual representation of the repository's file and folder structure.
+                Browse every file, or explore the architecture by drilling into
+                directories.
               </p>
             </div>
-            <div className="card diagram-card">
-              <RepositoryDiagram tree={diagramTree} status={status} />
-            </div>
-          </section>
 
-          {/* File tree */}
-          <section className="analyzer-section" aria-label="Repository files">
-            <div className="analyzer-section__header">
-              <h3 className="analyzer-section__title">Repository Files</h3>
-              <p className="analyzer-section__desc">
-                Explore the file and folder structure.
-              </p>
+            <div className="viewtabs" role="tablist" aria-label="Structure view">
+              <button
+                type="button"
+                role="tab"
+                id="tab-tree"
+                aria-selected={view === "tree"}
+                aria-controls="panel-tree"
+                className={`viewtabs__tab${view === "tree" ? " is-active" : ""}`}
+                onClick={() => setView("tree")}
+              >
+                File Tree
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-diagram"
+                aria-selected={view === "diagram"}
+                aria-controls="panel-diagram"
+                className={`viewtabs__tab${view === "diagram" ? " is-active" : ""}`}
+                onClick={() => setView("diagram")}
+              >
+                Architecture
+              </button>
             </div>
-            <div className="card filetree-card">
-              <FileTree nodes={result.tree} />
-            </div>
+
+            {view === "tree" ? (
+              <div
+                className="card filetree-card"
+                id="panel-tree"
+                role="tabpanel"
+                aria-labelledby="tab-tree"
+              >
+                <FileTree nodes={root.children} onOpenInDiagram={openInDiagram} />
+              </div>
+            ) : (
+              <div
+                className="card diagram-card"
+                id="panel-diagram"
+                role="tabpanel"
+                aria-labelledby="tab-diagram"
+              >
+                <RepositoryDiagram
+                  root={root}
+                  currentPath={currentPath}
+                  onNavigate={setCurrentPath}
+                  truncated={result.truncated}
+                />
+              </div>
+            )}
           </section>
         </>
       )}
 
-      {/* ── Empty states (shown when idle or error) ── */}
+      {/* ── Empty state (idle or error) ── */}
       {(status === "idle" || status === "error") && (
-        <>
-          <section className="analyzer-section" aria-label="Repository structure diagram">
-            <div className="analyzer-section__header">
-              <h3 className="analyzer-section__title">Repository Structure</h3>
-              <p className="analyzer-section__desc">
-                Visual representation of the repository's file and folder structure.
+        <section className="analyzer-section" aria-label="Repository structure">
+          <div className="analyzer-section__header">
+            <h3 className="analyzer-section__title">Repository Structure</h3>
+            <p className="analyzer-section__desc">
+              Browse every file, or explore the architecture by drilling into
+              directories.
+            </p>
+          </div>
+          <div className="card filetree-card filetree-card--empty">
+            <div className="empty-state">
+              <span className="empty-state__icon" aria-hidden="true">
+                📂
+              </span>
+              <p className="empty-state__text">
+                Analyze a GitHub repository to see its structure here.
               </p>
             </div>
-            <div className="card diagram-card diagram-card--empty">
-              <div className="empty-state">
-                <span className="empty-state__icon" aria-hidden="true">⬡</span>
-                <p className="empty-state__text">
-                  Analyze a GitHub repository to see its structure here.
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <section className="analyzer-section" aria-label="Repository files">
-            <div className="analyzer-section__header">
-              <h3 className="analyzer-section__title">Repository Files</h3>
-              <p className="analyzer-section__desc">
-                Explore the file and folder structure.
-              </p>
-            </div>
-            <div className="card filetree-card filetree-card--empty">
-              <div className="empty-state">
-                <span className="empty-state__icon" aria-hidden="true">📂</span>
-                <p className="empty-state__text">
-                  Your repository file tree will appear here after analysis.
-                </p>
-              </div>
-            </div>
-          </section>
-        </>
+          </div>
+        </section>
       )}
     </div>
   );

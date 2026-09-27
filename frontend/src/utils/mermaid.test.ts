@@ -1,213 +1,257 @@
 /**
- * Tests for treeToMermaid()
- *
- * Plain TypeScript — no test-framework dependency.
- * Each test throws on failure so the exit code is non-zero if any test fails.
+ * Tests for the architecture-explorer Mermaid generator.
  *
  * Run with:  npx tsx src/utils/mermaid.test.ts
  */
-import { treeToMermaid, type TreeNode } from "./mermaid";
+import type { RepositoryTreeNode } from "../types/github";
+import type { TreeNode } from "../types/tree";
+import { buildFileTree, createRepositoryRoot, findNodeByPath } from "./fileTree";
+import {
+  MAX_DIAGRAM_NODES,
+  countDiagramNodes,
+  describeDirectory,
+  escapeLabel,
+  generateMermaidDiagram,
+} from "./mermaid";
+import { assert, assertEqual, report, test } from "./testHarness";
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+const F = (path: string): RepositoryTreeNode => ({ path, type: "file" });
+const D = (path: string): RepositoryTreeNode => ({ path, type: "directory" });
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    throw new Error(`Assertion failed: ${message}`);
-  }
+function repo(...entries: RepositoryTreeNode[]): TreeNode {
+  return createRepositoryRoot("octocat/Hello-World", buildFileTree(entries));
 }
 
-interface TestResult {
-  label: string;
-  passed: boolean;
-  error?: string;
+function at(root: TreeNode, path: string): TreeNode {
+  const node = findNodeByPath(root, path);
+  if (node === null) throw new Error(`missing node: ${path}`);
+  return node;
 }
 
-const results: TestResult[] = [];
-
-function test(label: string, fn: () => void): void {
-  try {
-    fn();
-    results.push({ label, passed: true });
-  } catch (err) {
-    results.push({
-      label,
-      passed: false,
-      error: err instanceof Error ? err.message : String(err),
-    });
+/** All node-definition IDs, in order of appearance. */
+function nodeIds(definition: string): string[] {
+  const ids: string[] = [];
+  for (const line of definition.split("\n")) {
+    const match = /^ {2}([A-Za-z0-9_]+)[[("]/.exec(line);
+    if (match !== null) ids.push(match[1]);
   }
+  return ids;
 }
 
-// ── test cases ────────────────────────────────────────────────────────────────
+function edges(definition: string): string[] {
+  return definition.split("\n").filter((l) => l.includes("-->")).map((l) => l.trim());
+}
 
-// 1. Empty tree
-test("empty tree returns valid header only", () => {
-  const result = treeToMermaid([]);
-  assert(result === "graph TD", `Expected "graph TD", got: ${result}`);
+const SAMPLE = repo(
+  F("README.md"),
+  F("package.json"),
+  F("src/App.tsx"),
+  F("src/main.tsx"),
+  F("src/components/Header.tsx"),
+  F("src/components/Footer.tsx"),
+  F("src/pages/Home.tsx"),
+  F("backend/controllers/a.ts"),
+  F("backend/services/b.ts")
+);
+
+const DIRS_ONLY = { showFiles: false };
+const WITH_FILES = { showFiles: true };
+
+test("the root diagram shows only top-level entries, never the whole tree", () => {
+  const out = generateMermaidDiagram(SAMPLE, WITH_FILES);
+  assert(out.definition !== null, "a diagram was produced");
+  const def = out.definition as string;
+
+  // Top level is: backend/, src/, package.json, README.md
+  assertEqual(out.nodeCount, 4, "four top-level entries");
+  assert(def.includes('"📁 src'), "src present");
+  assert(def.includes('"📁 backend'), "backend present");
+  assert(def.includes('"📄 README.md"'), "root file present");
+  // Nothing from deeper levels may leak in.
+  assert(!def.includes("Header.tsx"), "no grandchildren");
+  assert(!def.includes("components"), "no grandchild directories");
 });
 
-// 2. Single file
-test("single file produces a rectangle node definition", () => {
-  const tree: TreeNode[] = [
-    { name: "README.md", path: "README.md", type: "file" },
-  ];
-  const result = treeToMermaid(tree);
-  assert(result.startsWith("graph TD"), "must start with graph TD");
-  assert(result.includes("n_README_md"), "must contain node ID for README.md");
-  // File nodes use square-bracket syntax: id["label"]
-  assert(result.includes("n_README_md["), "file node must use rect [ syntax");
+test("root-level files stay visible alongside directories", () => {
+  const def = generateMermaidDiagram(SAMPLE, WITH_FILES).definition as string;
+  assert(def.includes('"📄 package.json"'), "package.json shown");
+  assert(def.includes('"📄 README.md"'), "README.md shown");
 });
 
-// 3. Directory with one child file → parent → child edge
-test("directory with one file produces a parent → child edge", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "src",
-      path: "src",
-      type: "directory",
-      children: [{ name: "index.ts", path: "src/index.ts", type: "file" }],
-    },
-  ];
-  const result = treeToMermaid(tree);
-  assert(result.includes("n_src"), "must contain src node ID");
-  assert(result.includes("n_src_index_ts"), "must contain child node ID");
-  assert(result.includes("n_src --> n_src_index_ts"), "must contain edge");
-  // Directory uses rounded-bracket shape: id("label")
-  assert(result.includes('n_src("'), "directory must use rounded ( shape");
+test("files are hidden by default and shown on request", () => {
+  const hidden = generateMermaidDiagram(SAMPLE, DIRS_ONLY);
+  assertEqual(hidden.nodeCount, 2, "only the two directories");
+  assert(!(hidden.definition as string).includes("📄"), "no file nodes");
+
+  const shown = generateMermaidDiagram(SAMPLE, WITH_FILES);
+  assertEqual(shown.nodeCount, 4, "directories plus root files");
+  assert((shown.definition as string).includes("📄"), "file nodes present");
 });
 
-// 4. Nested directories — all intermediate edges present
-test("deeply nested directories produce all edges", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "a",
-      path: "a",
-      type: "directory",
-      children: [
-        {
-          name: "b",
-          path: "a/b",
-          type: "directory",
-          children: [{ name: "c.ts", path: "a/b/c.ts", type: "file" }],
-        },
-      ],
-    },
-  ];
-  const result = treeToMermaid(tree);
-  assert(result.includes("n_a --> n_a_b"), "must have edge a → b");
-  assert(result.includes("n_a_b --> n_a_b_c_ts"), "must have edge b → c");
+test("drilling into a directory shows only that directory's children", () => {
+  const out = generateMermaidDiagram(at(SAMPLE, "src"), WITH_FILES);
+  const def = out.definition as string;
+  assertEqual(out.nodeCount, 4, "components, pages, App.tsx, main.tsx");
+  assert(def.includes('"📁 components'), "components present");
+  assert(def.includes('"📁 pages'), "pages present");
+  assert(def.includes('"📄 App.tsx"'), "App.tsx present");
+  assert(!def.includes("Header.tsx"), "grandchildren excluded");
 });
 
-// 5. Multiple sibling files — all unique node IDs
-test("multiple sibling files all get unique, distinct node IDs", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "src",
-      path: "src",
-      type: "directory",
-      children: [
-        { name: "alpha.ts", path: "src/alpha.ts", type: "file" },
-        { name: "beta.ts", path: "src/beta.ts", type: "file" },
-        { name: "gamma.ts", path: "src/gamma.ts", type: "file" },
-      ],
-    },
-  ];
-  const result = treeToMermaid(tree);
-  const ids = ["n_src_alpha_ts", "n_src_beta_ts", "n_src_gamma_ts"];
-  for (const id of ids) {
-    assert(result.includes(id), `must contain node ID: ${id}`);
-  }
-  // Each definition line must appear exactly once
-  const definitionLines = result
-    .split("\n")
-    .filter((l) => !l.includes("-->"))
-    .join("\n");
-  for (const id of ids) {
-    const matches = definitionLines.match(new RegExp(id, "g")) ?? [];
-    assert(matches.length === 1, `${id} defined ${matches.length}×, expected 1`);
-  }
+test("the selected directory becomes the diagram root", () => {
+  const def = generateMermaidDiagram(at(SAMPLE, "src/components"), WITH_FILES)
+    .definition as string;
+  assert(/root\(\["components/.test(def), "components is the root node");
+  const targets = edges(def).map((e) => e.split("-->")[1].trim());
+  assertEqual(targets.length, 2, "two children linked");
+  assert(!targets.includes("root"), "root is never a child");
 });
 
-// 6. Special characters in filenames — must not break Mermaid label syntax
-test("special characters in filenames are escaped in labels", () => {
-  const tree: TreeNode[] = [
-    {
-      name: 'say "hello" & more',
-      path: 'say "hello" & more',
-      type: "file",
-    },
-  ];
-  const result = treeToMermaid(tree);
-  // Raw unescaped double-quote inside the label would break Mermaid rendering
-  // The label is wrapped in double-quotes, so inner " must be escaped as \"
-  assert(
-    !result.match(/\["say "hello"/),
-    "raw double-quote inside label must be escaped"
+test("depth 2 adds one more level and nothing beyond it", () => {
+  const out = generateMermaidDiagram(SAMPLE, { showFiles: false, depth: 2 });
+  const def = out.definition as string;
+  // backend + src, plus their subdirectories (controllers, services, components, pages)
+  assertEqual(out.nodeCount, 6, "two directories plus four subdirectories");
+  assert(def.includes('"📁 components'), "grandchild directory present");
+  assert(!def.includes("Header.tsx"), "great-grandchildren excluded");
+});
+
+test("every node receives a unique, valid Mermaid identifier", () => {
+  const tree = repo(
+    F("src/a-b.txt"), F("src/a_b.txt"), F("src/a.b.txt"),
+    F("src/a b.txt"), F("src/A-B.txt")
   );
-  // The path-derived node ID must sanitise special chars to underscores
-  assert(result.includes("n_say__hello__"), "path-based ID must be sanitised");
+  const ids = nodeIds(generateMermaidDiagram(at(tree, "src"), WITH_FILES).definition as string);
+  assertEqual(new Set(ids).size, ids.length, "no collisions: " + ids.join(","));
+  for (const id of ids) {
+    assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(id), "valid identifier: " + id);
+  }
 });
 
-// 7. Deterministic — same input always produces identical output
-test("same input produces identical output across multiple calls (deterministic)", () => {
-  const tree: TreeNode[] = [
-    {
-      name: "lib",
-      path: "lib",
-      type: "directory",
-      children: [
-        { name: "util.ts", path: "lib/util.ts", type: "file" },
-        { name: "core.ts", path: "lib/core.ts", type: "file" },
-      ],
-    },
-    { name: "index.ts", path: "index.ts", type: "file" },
-  ];
-
-  const first = treeToMermaid(tree);
-  const second = treeToMermaid(tree);
-  const third = treeToMermaid(tree);
-
-  assert(first === second, "first and second runs produced different output");
-  assert(second === third, "second and third runs produced different output");
+test("200+ collision-prone children still get unique IDs", () => {
+  const entries: RepositoryTreeNode[] = [];
+  for (let i = 0; i < 60; i++) {
+    entries.push(F(`src/a-b${i}.ts`), F(`src/a_b${i}.ts`), F(`src/a.b${i}.ts`), F(`src/a b${i}.ts`));
+  }
+  const tree = repo(...entries);
+  const out = generateMermaidDiagram(at(tree, "src"), { showFiles: true, maxNodes: 1000 });
+  const ids = nodeIds(out.definition as string);
+  assert(ids.length > 200, "more than 200 nodes, got " + ids.length);
+  assertEqual(new Set(ids).size, ids.length, "all unique");
 });
 
-// 8. Duplicate paths — node defined only once (de-dup guard)
-test("nodes with duplicate paths are defined exactly once", () => {
-  // Same object reference inserted twice — synthetic edge case to exercise the
-  // seen-set guard in treeToMermaid.
-  const shared: TreeNode = {
-    name: "shared.ts",
-    path: "shared.ts",
-    type: "file",
-  };
-  const tree: TreeNode[] = [shared, shared];
-  const result = treeToMermaid(tree);
+test("special characters are escaped instead of breaking the syntax", () => {
+  const tree = repo(
+    F('w/a"q.ts'), F("w/a<b>c.ts"), F("w/a&b.ts"), F("w/a#b.ts"),
+    F("w/[id].tsx"), F("w/(g).ts"), F("w/{b}.ts"), F("w/it's.ts"),
+    F("w/a+b.ts"), F("w/a@b.ts"), F("w/a$b.ts"), F("w/a%b.ts")
+  );
+  const def = generateMermaidDiagram(at(tree, "w"), WITH_FILES).definition as string;
+  for (const line of def.split("\n").filter((l) => l.includes("📄"))) {
+    const inner = /"([^"]*)"/.exec(line)?.[1] ?? "";
+    assert(!inner.includes('"'), "no raw quote: " + line);
+    assert(!inner.includes("<"), "no raw angle bracket: " + line);
+    assert(!inner.includes(">"), "no raw angle bracket: " + line);
+  }
+  assert(def.includes("[id].tsx"), "bracket filename preserved");
+});
 
-  // Count definition occurrences (lines that contain the id + "[")
-  const definitionLines = result
-    .split("\n")
-    .filter((l) => l.includes("n_shared_ts["));
-  assert(
-    definitionLines.length === 1,
-    `node defined ${definitionLines.length}×, expected 1`
+test("escapeLabel escapes # before introducing its own # entities", () => {
+  assertEqual(escapeLabel("a#b"), "a#35;b", "hash escaped");
+  assertEqual(escapeLabel('a"b'), "a#quot;b", "quote escaped");
+  assertEqual(escapeLabel("a&b"), "a#amp;b", "ampersand escaped");
+  assertEqual(escapeLabel("<b>"), "#lt;b#gt;", "angle brackets escaped");
+  assert(!escapeLabel("a&b").includes("#35;"), "no double escaping");
+});
+
+test("directory nodes carry their descendant counts", () => {
+  const def = generateMermaidDiagram(SAMPLE, DIRS_ONLY).definition as string;
+  // src holds 2 subdirectories and 5 files in total.
+  assertEqual(describeDirectory(at(SAMPLE, "src")), "2 dirs · 5 files", "src summary");
+  assert(def.includes("2 dirs · 5 files"), "counts rendered in the label, got:\n" + def);
+});
+
+test("counts are pluralized correctly", () => {
+  const tree = repo(F("one/a.ts"), F("many/a.ts"), F("many/b.ts"), F("many/sub/c.ts"));
+  assertEqual(describeDirectory(at(tree, "one")), "1 file", "singular file");
+  assertEqual(describeDirectory(at(tree, "many")), "1 dir · 3 files", "singular dir, plural files");
+});
+
+test("a directory with no files reports only its file count", () => {
+  const tree = repo(F("empty-ish/a.ts"));
+  assertEqual(describeDirectory(at(tree, "empty-ish")), "1 file", "no dirs segment, singular file");
+});
+
+test("the max-node guard refuses to build an oversized diagram", () => {
+  const entries: RepositoryTreeNode[] = [];
+  for (let i = 0; i < MAX_DIAGRAM_NODES + 10; i++) entries.push(F(`wide/f${i}.ts`));
+  const tree = repo(...entries);
+
+  const out = generateMermaidDiagram(at(tree, "wide"), WITH_FILES);
+  assertEqual(out.exceededMaxNodes, true, "guard tripped");
+  assertEqual(out.definition, null, "nothing generated");
+  assertEqual(out.nodeCount, MAX_DIAGRAM_NODES + 10, "count still reported");
+
+  // Hiding files brings the same directory back under the limit.
+  const dirsOnly = generateMermaidDiagram(at(tree, "wide"), DIRS_ONLY);
+  assertEqual(dirsOnly.exceededMaxNodes, false, "directories-only fits");
+});
+
+test("the guard honours an explicit maxNodes", () => {
+  const out = generateMermaidDiagram(SAMPLE, { showFiles: true, maxNodes: 2 });
+  assertEqual(out.exceededMaxNodes, true, "tripped at 2");
+  assertEqual(generateMermaidDiagram(SAMPLE, { showFiles: true, maxNodes: 4 }).exceededMaxNodes, false, "fits at 4");
+});
+
+test("countDiagramNodes matches what the generator draws", () => {
+  for (const options of [DIRS_ONLY, WITH_FILES, { showFiles: true, depth: 2 as const }]) {
+    const expected = countDiagramNodes(SAMPLE, { ...options, maxNodes: 10000 });
+    const actual = generateMermaidDiagram(SAMPLE, { ...options, maxNodes: 10000 }).nodeCount;
+    assertEqual(actual, expected, "counts agree for " + JSON.stringify(options));
+  }
+});
+
+test("an empty directory produces a valid root-only diagram", () => {
+  const tree = repo(D("hollow"));
+  const out = generateMermaidDiagram(at(tree, "hollow"), WITH_FILES);
+  assertEqual(out.nodeCount, 0, "no children");
+  assert((out.definition as string).startsWith("graph TD"), "valid header");
+  assert(!(out.definition as string).includes("-->"), "no edges");
+});
+
+test("an empty repository produces a valid root-only diagram", () => {
+  const out = generateMermaidDiagram(repo(), WITH_FILES);
+  assertEqual(out.nodeCount, 0, "no children");
+  assertEqual(
+    out.definition,
+    'graph TD\n  root(["octocat/Hello-World<br/>0 files"])',
+    "root-only diagram"
   );
 });
 
-// ── report ────────────────────────────────────────────────────────────────────
+test("pathsById maps every drawn node back to its repository path", () => {
+  const out = generateMermaidDiagram(SAMPLE, WITH_FILES);
+  assertEqual(out.pathsById.get("root"), "", "root maps to the repository root");
+  const paths = [...out.pathsById.values()].sort();
+  assertEqual(paths, ["", "README.md", "backend", "package.json", "src"], "all paths mapped");
+});
 
-const passed = results.filter((r) => r.passed).length;
-const failed = results.filter((r) => !r.passed).length;
+test("pathsById after drilling in maps to full paths, not names", () => {
+  const out = generateMermaidDiagram(at(SAMPLE, "src"), WITH_FILES);
+  const paths = [...out.pathsById.values()].sort();
+  assertEqual(
+    paths,
+    ["src", "src/App.tsx", "src/components", "src/main.tsx", "src/pages"],
+    "fully qualified paths"
+  );
+});
 
-console.log("\ntreeToMermaid() tests\n");
-for (const r of results) {
-  if (r.passed) {
-    console.log(`  ✓ ${r.label}`);
-  } else {
-    console.error(`  ✗ ${r.label}`);
-    console.error(`    ${r.error ?? "(no message)"}`);
-  }
-}
-console.log(`\n${passed} passed, ${failed} failed.\n`);
+test("output is deterministic across repeated calls", () => {
+  assertEqual(
+    generateMermaidDiagram(SAMPLE, WITH_FILES).definition,
+    generateMermaidDiagram(SAMPLE, WITH_FILES).definition,
+    "same input, same output"
+  );
+});
 
-if (failed > 0) {
-  throw new Error(`${failed} test(s) failed.`);
-}
+await report("architecture-explorer Mermaid generator tests");

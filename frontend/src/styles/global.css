@@ -183,7 +183,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   color: #e3b341;
 }
 .alert-title { font-weight: 600; display: block; margin-bottom: 2px; }
-.alert-body { font-size: 0.825rem; opacity: 0.9; }
+.alert-body { display: block; font-size: 0.825rem; opacity: 0.9; }
+/* A second line of body text (for example the private-repository hint) needs
+   separating from the first, which is otherwise run together inline. */
+.alert-body + .alert-body { margin-top: var(--space-2); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {
@@ -502,7 +505,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 
 /* Mermaid injects an SVG — ensure it's fully visible */
 .diagram-svg-wrapper svg {
-  max-width: 100%;
+  /* Keep the diagram at its natural size. Constraining it to the card width
+     scales a wide graph down until the labels are unreadable (a 24,000px
+     diagram collapses to ~40px tall); the wrapper scrolls instead. */
+  max-width: none;
   height: auto;
   display: block;
 }
@@ -722,4 +728,259 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   .page-content {
     gap: var(--space-6);
   }
+}
+
+/* ── Phase 2: view tabs + diagram controls ─────────────────────────────── */
+
+.viewtabs {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  margin-bottom: var(--space-4);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.viewtabs__tab {
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.viewtabs__tab:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.viewtabs__tab.is-active {
+  color: var(--text-primary);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.viewtabs__tab:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.diagram-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.diagram-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.diagram-toolbar__count {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.segmented__btn {
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.segmented__btn + .segmented__btn {
+  border-left: 1px solid var(--border);
+}
+
+.segmented__btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.segmented__btn.is-active {
+  color: var(--text-primary);
+  background: var(--accent-muted);
+}
+
+.segmented__btn:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+}
+
+/* ── Phase 2: architecture explorer ────────────────────────────────────── */
+
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.875rem;
+}
+
+.breadcrumb__part {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.breadcrumb__sep {
+  color: var(--text-muted);
+}
+
+.breadcrumb__crumb {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.breadcrumb__crumb:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.breadcrumb__crumb:disabled {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: default;
+}
+
+.diagram-toolbar__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.btn-ghost {
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.select {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.diagram-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+/* Directory nodes are drill-down targets. */
+.diagram-svg-wrapper .node {
+  cursor: pointer;
+}
+
+.ftree-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.ftree-open {
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast), color var(--t-fast);
+}
+
+.ftree-row:hover .ftree-open,
+.ftree-open:focus-visible {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* ── Phase 3: authentication control ───────────────────────────────────── */
+
+.auth-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.auth-control__avatar {
+  border-radius: 50%;
+  display: block;
+}
+
+.auth-control__login {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.auth-control__pending,
+.auth-control__connect {
+  font-size: 0.8125rem;
+}
+
+.auth-control__connect {
+  text-decoration: none;
+  padding: var(--space-2) var(--space-3);
+}
+
+.auth-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }

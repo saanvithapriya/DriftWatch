@@ -14,11 +14,19 @@ This project will eventually provide GitHub repository analysis, architecture vi
 - A backend health API endpoint
 - Frontend/backend round trip verification
 
-**Phase 1** adds GitHub repository ingestion: a public repository URL in, a
+**Phase 1** added GitHub repository ingestion: a public repository URL in, a
 normalized file tree out. See below.
 
-Architecture visualization, code intelligence, private repositories, and
-persistence do not exist yet — those belong to later phases.
+**Phase 2** adds the repository architecture explorer: the ingested tree is
+explored one directory at a time as a Mermaid `graph TD` diagram, alongside the
+complete file tree.
+
+**Phase 3** adds GitHub App sign-in so private repositories you have access to
+can be analyzed too. Anonymous public analysis is unchanged, and the GitHub
+credential never reaches the browser.
+
+Code intelligence, dependency analysis and persistence do not exist yet —
+those belong to later phases.
 
 ## Project Structure
 
@@ -164,12 +172,330 @@ than presenting a partial tree as the whole repository.
 Errors always take the shape `{ "success": false, "message": "..." }`. Stack
 traces and raw Octokit errors are never returned to the client.
 
+## Phase 2 — Repository Architecture Explorer
+
+Phase 2 turns the flat path list from Phase 1 into something explorable. It is
+a purely deterministic frontend transformation — no new endpoint, and **no
+extra request for any navigation**.
+
+DriftWatch deliberately does **not** render the whole repository as one giant
+graph. Large repositories contain thousands of files, so the visualization uses
+hierarchical drill-down to keep diagrams readable and responsive:
+
+```text
+Repository
+    ↓
+High-level architecture      (top-level directories + root files)
+    ↓
+Directory drill-down         (click a directory)
+    ↓
+Deeper directory
+    ↓
+File tree for detailed inspection
+```
+
+### Why drill-down instead of one big diagram
+
+Mermaid lays a graph out synchronously on the main thread, so an oversized
+diagram does not merely render slowly — it freezes the tab. Measured in
+Chromium on this project:
+
+| Nodes | Render time |
+| --- | --- |
+| 100 | ~3.4s |
+| 300 | ~15.3s |
+| 500 | ~32.8s |
+| 700 | never completes — Mermaid gives up |
+
+Drawing one level at a time keeps every diagram far below that. `facebook/react`
+(7,893 nodes) and `chromium/chromium` (57,053 nodes) both produce a root
+diagram in well under half a second, because only their top-level entries are
+drawn.
+
+### Structure only — not a dependency graph
+
+Phase 2 answers one question, and only that one:
+
+```text
+Phase 2:  "What files and directories exist?"
+Phase 4:  "How does the code depend on and call other code?"
+```
+
+The diagram shows the file/folder hierarchy. It says nothing about imports or
+call graphs; that analysis belongs to a later phase.
+
+### The two views
+
+**File Tree** (the default) holds the *complete* repository, with collapsible
+directories. It is never reduced.
+
+**Architecture** shows one directory at a time:
+
+- The repository root shows top-level directories **and** root-level files
+  (`package.json`, `README.md`, …) — root files are never hidden.
+- Clicking a directory node drills into it and draws only *its* children.
+- **Breadcrumbs** (`react/react / src / components`) jump to any ancestor.
+- **↑ Up** goes one level up, and is disabled at the repository root.
+- **Show files** (off by default) adds file children to the current level.
+- **Depth** 1 or 2 draws one extra level when a quick overview helps.
+
+Every directory node carries its size, so a directory's scale is visible
+without opening it:
+
+```text
+📁 src
+2 dirs · 5 files
+```
+
+Those counts are descendant totals, computed once when the hierarchy is built
+rather than recalculated on each render.
+
+### State and navigation
+
+The repository tree is built once per analysis and never mutated. Navigation
+changes only a `currentPath` string; the visible subtree is derived from it.
+That makes navigation reversible and keeps stale state impossible — analyzing a
+different repository resets the path to its root, and a path that no longer
+exists falls back to the root rather than rendering nothing.
+
+Because the whole tree is already in memory, **drilling down, breadcrumbs, Up,
+and the toggles issue no network requests at all**. One analysis is exactly one
+`POST /api/github/tree`.
+
+### Generating a diagram
+
+`buildFileTree` converts the flat `{ path, type }` list into a hierarchical
+`TreeNode[]` with size metadata, creating any intermediate directories GitHub
+did not list and ordering siblings directories-first then alphabetically, so
+output is deterministic. `createRepositoryRoot` wraps that forest in a node
+standing for the repository itself.
+
+`generateMermaidDiagram(node, options)` is pure — it knows nothing about React
+or HTTP — and emits a `graph TD` rooted at the selected directory:
+
+```text
+graph TD
+  root(["src<br/>2 dirs · 5 files"])
+  node_1("📁 components<br/>0 dirs · 2 files")
+  root --> node_1
+  node_2["📄 App.tsx"]
+  root --> node_2
+```
+
+Node IDs are sequential (`node_1`, `node_2`, …) rather than derived from the
+path. Deriving an ID by replacing unsafe characters is not injective:
+`a-b.txt`, `a_b.txt` and `a.b.txt` all collapse onto the same ID, and files
+silently vanish from the diagram. The generator also returns a map from node ID
+back to repository path, which is what makes nodes clickable.
+
+Labels are escaped with Mermaid entity codes (`#` first, then `&`, `"`, `<`,
+`>`), so filenames such as `[id]`, `a"b.ts` or `a<b>c.ts` render as written
+instead of breaking the syntax.
+
+### Safety guard
+
+Drawing one level at a time normally keeps diagrams small, but a single
+directory can still hold hundreds of entries. `MAX_DIAGRAM_NODES` (150) caps
+this: above it, nothing is generated and the view explains the situation
+instead of freezing the browser.
+
+```text
+This directory contains 200 items, too many to render as one diagram
+(the limit is 150). Use the File Tree, or select a subdirectory to
+explore further.
+```
+
+### Truncated, empty, and failed diagrams
+
+When Phase 1 reports `truncated: true`, the architecture view carries an
+explicit warning that some files may be missing, so a partial tree is never
+presented as the complete repository. Navigation still works over whatever
+arrived.
+
+An empty repository shows `This repository has no files to visualize.` rather
+than an invalid diagram. If Mermaid fails to render, the page stays alive: the
+user sees `Unable to render this diagram.` with a suggestion to try a smaller
+directory, and the real error goes to the console.
+
+## Phase 3 — Private Repository Support
+
+Phase 3 lets a signed-in user analyze private repositories, while leaving
+anonymous public analysis exactly as it was.
+
+```text
+GitHub URL
+    ↓
+POST /api/github/tree          (unchanged contract)
+    ↓
+Auth/session middleware        (resolves a credential, or not)
+    ↓
+Controller                     (knows about identity)
+    ↓
+githubService(owner, repo, credential?)   (knows nothing about identity)
+    ↓
+Authenticated Octokit  OR  anonymous Octokit
+    ↓
+GitHub
+```
+
+**The GitHub credential never reaches the browser.** It is created by the
+backend, stored in a server-side session, and used only for outbound GitHub
+calls. The browser receives an opaque session id in an HttpOnly cookie and, at
+most, the signed-in user's public profile (`id`, `login`, `name`, `avatarUrl`).
+
+### Why a GitHub App
+
+DriftWatch uses a **GitHub App** rather than an OAuth App. An OAuth App would
+ask for an account-wide `repo` scope; a GitHub App is limited to the
+repositories it is installed on and to the permissions it declares, which is
+the least privilege that still answers "what files does this repository
+contain?".
+
+Only the **user authorization (user-to-server)** flow is used. The app's
+private key and App ID exist solely for server-to-server installation tokens,
+which DriftWatch never mints — so the private key is not configuration here and
+never exists in the process at all.
+
+### GitHub App setup
+
+Create a GitHub App under *Settings → Developer settings → GitHub Apps*:
+
+| Setting | Value |
+| --- | --- |
+| Callback URL | `http://localhost:5000/api/auth/github/callback` |
+| Request user authorization (OAuth) during installation | enabled |
+| Webhook | not required — disable it |
+| Repository permissions → **Contents** | Read-only |
+| Repository permissions → **Metadata** | Read-only (mandatory) |
+
+`Contents: Read-only` is what allows the repository tree to be read; no write
+permission of any kind is requested.
+
+Then install the app on the account or organization whose repositories you want
+to analyze, and set in `backend/.env`:
+
+```bash
+GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxx
+GITHUB_APP_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_APP_CALLBACK_URL=http://localhost:5000/api/auth/github/callback
+
+# Only when the backend is served over HTTPS
+# SESSION_COOKIE_SECURE=true
+```
+
+Leave them unset to run anonymously: public analysis still works and the
+sign-in route reports that it is unavailable. `.env` is never committed.
+
+### Authentication flow
+
+```text
+Browser clicks "Connect GitHub"
+    ↓
+GET /api/auth/github          → issues a random single-use state, redirects
+    ↓
+GitHub authorization / installation
+    ↓
+GET /api/auth/github/callback → requires + consumes the state, exchanges the
+                                code, reads the user, creates a session
+    ↓
+Set-Cookie: HttpOnly session id
+    ↓
+Redirect to the configured frontend origin only
+```
+
+The callback is protected against CSRF: the `state` is 32 random bytes, stored
+server-side, required on return, valid once, and expires after 10 minutes. The
+code is never exchanged if the state does not validate. The redirect target is
+always built from `FRONTEND_URL`, never from anything the browser supplies, so
+there is no open-redirect surface.
+
+### API endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/auth/github` | Starts authorization (503 if no app is configured) |
+| `GET /api/auth/github/callback` | Validates state, creates the session |
+| `GET /api/auth/me` | Safe profile, or `{ user: null }` |
+| `GET /api/auth/logout` | Destroys the session, revokes the token, clears the cookie |
+
+`POST /api/github/tree` is **unchanged** — same URL, same request body, same
+response contract. It simply uses the session's credential when one exists.
+A client cannot supply its own credential; the request body is never a source
+of authentication.
+
+### Session architecture
+
+Sessions live behind a `SessionStore` interface with an in-memory
+implementation. They hold the credential; the cookie holds only the opaque id.
+
+> **In-memory sessions are not production-ready.** They are lost on restart and
+> are not shared between processes, so a multi-instance deployment would sign
+> users out at random as requests land on different instances. The interface
+> exists so this can be replaced with Redis or a database without touching the
+> auth flow.
+
+### Security model
+
+- The credential is stored server-side only, never in `localStorage`,
+  `sessionStorage`, React state, a URL or a response body.
+- The session cookie is `HttpOnly` (unreadable by page JavaScript),
+  `SameSite=Lax`, `Path=/`, and `Secure` when `SESSION_COOKIE_SECURE=true`.
+- CORS names exactly one origin with `credentials: true` — never a wildcard,
+  which browsers reject alongside credentials anyway.
+- Errors are logged through a redactor that strips GitHub token patterns and
+  private-key blocks, and never serializes the error object, because Octokit
+  errors carry the originating request's headers.
+- Repository filenames remain escaped and are rendered as text, as in Phase 2.
+
+### Private repository behaviour
+
+| Caller | Repository | Result |
+| --- | --- | --- |
+| Anonymous | Public | Works |
+| Signed in | Public | Works |
+| Signed in, has access | Private | Works |
+| Anonymous | Private | `404 GitHub repository not found` |
+| Signed in, no access | Private | `404 GitHub repository not found` |
+
+GitHub deliberately answers 404 rather than 403 for private repositories the
+caller cannot see, so that their existence is not leaked. DriftWatch relays
+that unchanged. The UI adds a **conditional** hint ("If it is private, connect
+GitHub…") which never confirms that the repository exists.
+
+If GitHub rejects a stored credential, the session is invalidated, the cookie
+is cleared and the frontend returns to its signed-out state.
+
+### Production hardening still required
+
+1. Replace the in-memory session and state stores with a shared backing store.
+2. Serve over HTTPS and set `SESSION_COOKIE_SECURE=true`.
+3. Handle GitHub App user-token expiry/refresh if the app has expiring tokens
+   enabled (currently a rejected token simply ends the session).
+4. Make logout a `POST` with CSRF protection; it is a `GET` today.
+5. Add rate limiting to the auth routes.
+6. Rotate the client secret through a secret manager rather than `.env`.
+
 ## Frontend
 
 The home page provides a repository URL field and an **Analyze Repository**
 button. It shows a loading state while fetching, reports errors inline, and on
-success displays the repository name, default branch, file and directory
-counts, and a collapsible nested file tree.
+success displays the repository name, default branch, and file and directory
+counts, followed by the two views described above.
 
-Top-level entries are expanded by default and nested directories start
-collapsed, so large repositories stay responsive.
+
+## Testing
+
+Frontend unit tests are plain TypeScript with no test-framework dependency:
+
+```bash
+npm test --workspace=frontend
+```
+
+This covers the tree builder and its size metadata, the Mermaid generator
+(including ID collisions, escaping, the max-node guard and determinism), and
+architecture-view navigation. The backend has its own suite for URL parsing and
+GitHub error mapping:
+
+```bash
+npm test --workspace=backend
+```
