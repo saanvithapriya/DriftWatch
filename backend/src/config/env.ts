@@ -28,6 +28,49 @@ export function readPort(raw: string | undefined, fallback = 5000): number {
   return parsed;
 }
 
+/**
+ * Path the backend serves the GitHub authorization callback on.
+ *
+ * Declared here so the default callback URL cannot drift from the route that
+ * actually exists; a test asserts the app really serves this path.
+ */
+export const GITHUB_CALLBACK_PATH = "/api/auth/github/callback";
+
+/**
+ * Callback URL registered with the GitHub App.
+ *
+ * Defaults to this backend's own local address so a developer does not have to
+ * restate something the route already determines. It must still be set
+ * explicitly for any non-local deployment, and it must match the callback URL
+ * configured in the GitHub App — GitHub rejects a mismatched redirect_uri, so
+ * a wrong value fails loudly rather than silently.
+ */
+export function readGithubCallbackUrl(
+  raw: string | undefined,
+  port: number
+): string {
+  if (raw === undefined || raw.trim() === "") {
+    return `http://localhost:${port}${GITHUB_CALLBACK_PATH}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `GITHUB_APP_CALLBACK_URL must be an absolute http(s) URL, but is ${JSON.stringify(raw)}`
+    );
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `GITHUB_APP_CALLBACK_URL must use http or https, but is ${JSON.stringify(raw)}`
+    );
+  }
+
+  return parsed.toString();
+}
+
 export function readFrontendUrl(
   raw: string | undefined,
   fallback = "http://localhost:5173"
@@ -75,7 +118,14 @@ export const env = {
   githubApp: {
     clientId: process.env.GITHUB_APP_CLIENT_ID || undefined,
     clientSecret: process.env.GITHUB_APP_CLIENT_SECRET || undefined,
-    callbackUrl: process.env.GITHUB_APP_CALLBACK_URL || undefined,
+    /**
+     * Always present: it falls back to this backend's own callback address, so
+     * only the two credentials actually have to be supplied.
+     */
+    callbackUrl: readGithubCallbackUrl(
+      process.env.GITHUB_APP_CALLBACK_URL,
+      readPort(process.env.PORT)
+    ),
   },
   /**
    * Set to "true" when the backend is served over HTTPS so the session cookie

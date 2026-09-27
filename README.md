@@ -364,35 +364,90 @@ private key and App ID exist solely for server-to-server installation tokens,
 which DriftWatch never mints — so the private key is not configuration here and
 never exists in the process at all.
 
-### GitHub App setup
+### GitHub Authentication — Local Development
 
-Create a GitHub App under *Settings → Developer settings → GitHub Apps*:
+Public repositories work with no setup at all. **Sign-in is only needed to
+analyze private repositories.** Until it is configured, "Connect GitHub"
+reports that sign-in is unavailable and everything else keeps working.
+
+#### 1. Register a GitHub App
+
+DriftWatch uses a **GitHub App** with the user authorization (user-to-server)
+flow — not an OAuth App, and not installation tokens. Create one at
+<https://github.com/settings/apps/new>:
 
 | Setting | Value |
 | --- | --- |
-| Callback URL | `http://localhost:5000/api/auth/github/callback` |
-| Request user authorization (OAuth) during installation | enabled |
-| Webhook | not required — disable it |
-| Repository permissions → **Contents** | Read-only |
-| Repository permissions → **Metadata** | Read-only (mandatory) |
+| GitHub App name | anything, e.g. `DriftWatch (local)` |
+| Homepage URL | `http://localhost:5173` |
+| **Callback URL** | `http://localhost:5000/api/auth/github/callback` |
+| Request user authorization (OAuth) during installation | **enabled** |
+| Webhook → Active | **disabled** |
+| Repository permissions → Contents | Read-only |
+| Repository permissions → Metadata | Read-only (mandatory) |
 
-`Contents: Read-only` is what allows the repository tree to be read; no write
-permission of any kind is requested.
+The callback URL must match the backend exactly: that is the route the backend
+serves, and GitHub rejects any mismatched `redirect_uri`.
 
-Then install the app on the account or organization whose repositories you want
-to analyze, and set in `backend/.env`:
+Afterwards, **Install** the app on the account or organization whose private
+repositories you want to analyze.
+
+#### 2. Copy the credentials into `backend/.env`
+
+On the app's settings page, note the **Client ID** and use *Generate a new
+client secret*. Then in `backend/.env`:
 
 ```bash
-GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxx
-GITHUB_APP_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GITHUB_APP_CALLBACK_URL=http://localhost:5000/api/auth/github/callback
+PORT=5000
+FRONTEND_URL=http://localhost:5173
 
-# Only when the backend is served over HTTPS
-# SESSION_COOKIE_SECURE=true
+GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxxxxxx
+GITHUB_APP_CLIENT_SECRET=your-client-secret
 ```
 
-Leave them unset to run anonymously: public analysis still works and the
-sign-in route reports that it is unavailable. `.env` is never committed.
+Only those two are required. `GITHUB_APP_CALLBACK_URL` is optional and
+defaults to `http://localhost:<PORT>/api/auth/github/callback`; set it
+explicitly for any non-local deployment.
+
+The app's **private key and App ID are not needed** — DriftWatch never mints
+installation tokens, so the private key never has to exist on this machine.
+
+> `backend/.env` is git-ignored and must never be committed. `.env.example`
+> holds placeholder names only. The client secret stays on the server: it is
+> never sent to the browser, never written to a response, and never logged.
+
+#### 3. Sign in
+
+```bash
+npm run dev
+```
+
+Open <http://localhost:5173>, click **Connect GitHub**, authorize the app, and
+GitHub returns you to DriftWatch signed in. Private repositories you have
+access to can then be analyzed like any other.
+
+#### If it does not work
+
+The sign-in route distinguishes three states, so the message tells you where
+you are:
+
+| Response from `GET /api/auth/github` | Meaning |
+| --- | --- |
+| Redirect to `github.com/login/oauth/authorize` | Configured correctly |
+| `GitHub sign-in is not configured on this server.` | Neither credential is set |
+| `GitHub sign-in is misconfigured on this server.` | One of the two is missing — **the server log names which** |
+
+Variable names appear only in the server log, never in the HTTP response, and
+credential values appear in neither.
+
+Other things worth checking:
+
+- The GitHub App's Callback URL matches `http://localhost:5000/api/auth/github/callback` character for character.
+- "Request user authorization (OAuth) during installation" is enabled.
+- The app is **installed** on the account owning the repository — a private
+  repository the app cannot see returns `GitHub repository not found`, because
+  GitHub deliberately hides its existence.
+- The backend was restarted after editing `.env`.
 
 ### Authentication flow
 

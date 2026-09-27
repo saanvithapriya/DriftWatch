@@ -16,6 +16,9 @@ coverage/
 *.log
 npm-debug.log*
 
+# TypeScript build info
+*.tsbuildinfo
+
 # Editor/OS
 .DS_Store
 .vscode/*
