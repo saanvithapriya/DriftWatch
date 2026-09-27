@@ -1,7 +1,22 @@
 import type { GithubTreeResponse, RepositoryTree } from "../types/github";
 import type { HealthResponse } from "../types/health";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
+/**
+ * Error carrying the HTTP status, so the UI can respond to *why* a request
+ * failed (for example offering to connect GitHub on a 404) without parsing
+ * message strings.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 /**
  * Performs a request, turning a network-level failure into a message that
@@ -10,9 +25,11 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
  * `fetch` rejects with a bare "Failed to fetch" when it cannot reach the
  * server at all, which gives no hint that the backend simply is not running.
  */
-async function request(path: string, init?: RequestInit): Promise<Response> {
+export async function request(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${API_URL}${path}`, init);
+    // Credentials are always included so the HttpOnly session cookie is sent.
+    // The backend allows exactly one origin, never a wildcard.
+    return await fetch(`${API_URL}${path}`, { credentials: "include", ...init });
   } catch {
     throw new Error(
       `Could not reach the backend at ${API_URL}. Make sure it is running (npm run dev).`
@@ -95,7 +112,8 @@ export async function analyzeGithubRepository(
   const payload: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(
+    throw new ApiError(
+      response.status,
       readErrorMessage(payload) ??
         `Request failed with status ${response.status}`
     );

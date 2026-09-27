@@ -183,7 +183,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   color: #e3b341;
 }
 .alert-title { font-weight: 600; display: block; margin-bottom: 2px; }
-.alert-body { font-size: 0.825rem; opacity: 0.9; }
+.alert-body { display: block; font-size: 0.825rem; opacity: 0.9; }
+/* A second line of body text (for example the private-repository hint) needs
+   separating from the first, which is otherwise run together inline. */
+.alert-body + .alert-body { margin-top: var(--space-2); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {
@@ -945,4 +948,39 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .ftree-open:focus-visible {
   opacity: 1;
   color: var(--accent);
+}
+
+/* ── Phase 3: authentication control ───────────────────────────────────── */
+
+.auth-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.auth-control__avatar {
+  border-radius: 50%;
+  display: block;
+}
+
+.auth-control__login {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.auth-control__pending,
+.auth-control__connect {
+  font-size: 0.8125rem;
+}
+
+.auth-control__connect {
+  text-decoration: none;
+  padding: var(--space-2) var(--space-3);
+}
+
+.auth-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }

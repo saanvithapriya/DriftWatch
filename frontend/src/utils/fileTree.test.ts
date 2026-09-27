@@ -258,4 +258,4 @@ test("an empty repository root is valid and reports zeroes", () => {
   assertEqual(root.counts.totalFiles, 0, "no files");
 });
 
-report("buildFileTree() / countTreeNodes() tests");
+await report("buildFileTree() / countTreeNodes() tests");

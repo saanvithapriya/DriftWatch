@@ -2,13 +2,20 @@
  * Minimal test harness — plain TypeScript, no test-framework dependency.
  *
  * Run a suite with:  npx tsx src/<path>.test.ts
- * `report()` throws when anything failed, so the process exit code is non-zero.
+ *
+ * Tests are queued rather than run on registration, so `report()` can await
+ * them in order. Async test bodies are fully awaited: running them eagerly
+ * without awaiting would report a pass before the assertions had executed.
+ * `report()` throws when anything failed, so the exit code is non-zero.
  */
 interface Result {
   label: string;
   error?: string;
 }
 
+type TestBody = () => void | Promise<void>;
+
+const queue: Array<{ label: string; body: TestBody }> = [];
 const results: Result[] = [];
 
 export function assert(condition: boolean, message: string): void {
@@ -25,19 +32,23 @@ export function assertEqual(actual: unknown, expected: unknown, message: string)
   }
 }
 
-export function test(label: string, fn: () => void): void {
-  try {
-    fn();
-    results.push({ label });
-  } catch (error) {
-    results.push({
-      label,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+export function test(label: string, body: TestBody): void {
+  queue.push({ label, body });
 }
 
-export function report(title: string): void {
+export async function report(title: string): Promise<void> {
+  for (const { label, body } of queue) {
+    try {
+      await body();
+      results.push({ label });
+    } catch (error) {
+      results.push({
+        label,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   console.log(`\n${title}\n`);
 
   let failed = 0;

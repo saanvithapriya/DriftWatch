@@ -33,6 +33,45 @@ function asClientRequestError(err: unknown): ClientRequestError | null {
   };
 }
 
+/**
+ * Patterns for anything credential-shaped. GitHub token prefixes cover
+ * personal (ghp_), user-to-server (ghu_), server-to-server (ghs_), OAuth
+ * (gho_) and refresh (ghr_) tokens.
+ */
+const CREDENTIAL_PATTERNS: RegExp[] = [
+  /gh[pousr]_[A-Za-z0-9]{10,}/g,
+  /(?:bearer|token)\s+[A-Za-z0-9._~+/-]{10,}=*/gi,
+  /-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----/g,
+];
+
+function redact(text: string): string {
+  let out = text;
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    out = out.replace(pattern, "[REDACTED]");
+  }
+  return out;
+}
+
+/**
+ * Builds a log line from an error without ever serializing the error object.
+ *
+ * Octokit's errors carry the originating request, including its headers, so
+ * logging the object wholesale risks writing an Authorization header into the
+ * server log. Only the name, message and stack are taken, and those are
+ * redacted as a second line of defence.
+ */
+export function describeErrorForLog(error: unknown): string {
+  if (error instanceof Error) {
+    const status = (error as { status?: unknown }).status;
+    const statusPart = typeof status === "number" ? ` (status ${status})` : "";
+    const stack = typeof error.stack === "string" ? `\n${error.stack}` : "";
+    return redact(`${error.name}: ${error.message}${statusPart}${stack}`);
+  }
+
+  if (typeof error === "string") return redact(error);
+  return `Non-error thrown: ${redact(Object.prototype.toString.call(error))}`;
+}
+
 export function errorHandler(
   err: unknown,
   _req: Request,
@@ -65,7 +104,8 @@ export function errorHandler(
   }
 
   // Anything else is unexpected: log it server-side, return nothing specific.
-  console.error(err);
+  // The error object itself is never logged — see describeErrorForLog.
+  console.error(describeErrorForLog(err));
   res.status(500).json({
     success: false,
     message: "Internal server error",

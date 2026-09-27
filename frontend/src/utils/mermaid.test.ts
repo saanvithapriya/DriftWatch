@@ -254,4 +254,4 @@ test("output is deterministic across repeated calls", () => {
   );
 });
 
-report("architecture-explorer Mermaid generator tests");
+await report("architecture-explorer Mermaid generator tests");

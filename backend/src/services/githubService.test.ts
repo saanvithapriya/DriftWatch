@@ -12,27 +12,77 @@ import { AppError } from "../utils/appError.js";
 import { normalizeTreeEntries, toAppError } from "./githubService.js";
 
 /** Mimics the shape Octokit throws: an Error carrying an HTTP status. */
-function octokitError(status: number): Error & { status: number } {
-  const error = new Error(`HTTP ${status}`) as Error & { status: number };
+function octokitError(
+  status: number,
+  options: { message?: string; headers?: Record<string, unknown> } = {}
+): Error & { status: number; response?: { headers: Record<string, unknown> } } {
+  const error = new Error(options.message ?? `HTTP ${status}`) as Error & {
+    status: number;
+    response?: { headers: Record<string, unknown> };
+  };
   error.status = status;
+  if (options.headers !== undefined) {
+    error.response = { headers: options.headers };
+  }
   return error;
 }
 
-test("a 404 becomes a clean 404 'repository not found'", () => {
+test("401 becomes a clean 401 authentication error", () => {
+  const mapped = toAppError(octokitError(401));
+  assertEqual(mapped.statusCode, 401, "status");
+  assert(
+    mapped.message.toLowerCase().includes("authentication"),
+    "message names the authentication problem"
+  );
+  assert(
+    !mapped.message.toLowerCase().includes("rate limit"),
+    "no longer conflated with rate limiting"
+  );
+});
+
+test("429 becomes a 429 with a rate-limit message", () => {
+  const mapped = toAppError(octokitError(429));
+  assertEqual(mapped.statusCode, 429, "status");
+  assert(mapped.message.includes("rate limit"), "mentions the rate limit");
+});
+
+test("403 is a permission error, not a rate-limit error", () => {
+  // Regression: every 403 used to be reported as a rate limit, so a token
+  // lacking a scope told the user to wait for a limit that never clears.
+  const mapped = toAppError(octokitError(403, { message: "Resource not accessible by integration" }));
+  assertEqual(mapped.statusCode, 403, "status");
+  assert(!mapped.message.includes("rate limit"), "not a rate-limit message");
+  assert(mapped.message.toLowerCase().includes("restricted"), "explains the restriction");
+});
+
+test("403 IS treated as rate limiting when GitHub says so", () => {
+  // GitHub answers an exhausted primary rate limit with 403, not 429.
+  const byHeader = toAppError(octokitError(403, { headers: { "x-ratelimit-remaining": "0" } }));
+  assertEqual(byHeader.statusCode, 429, "header-detected rate limit");
+  assert(byHeader.message.includes("rate limit"), "rate-limit message");
+
+  const byRetryAfter = toAppError(octokitError(403, { headers: { "retry-after": "60" } }));
+  assertEqual(byRetryAfter.statusCode, 429, "retry-after detected");
+
+  const byMessage = toAppError(octokitError(403, { message: "API rate limit exceeded for 1.2.3.4" }));
+  assertEqual(byMessage.statusCode, 429, "message-detected rate limit");
+
+  const secondary = toAppError(octokitError(403, { message: "You have triggered an abuse detection mechanism" }));
+  assertEqual(secondary.statusCode, 429, "secondary rate limit detected");
+});
+
+test("403 with rate-limit headers still present but not exhausted stays a 403", () => {
+  const mapped = toAppError(octokitError(403, { headers: { "x-ratelimit-remaining": "42" } }));
+  assertEqual(mapped.statusCode, 403, "quota remains, so it is a permission problem");
+});
+
+test("404 stays a privacy-preserving 'not found'", () => {
+  // A private repository the caller cannot see returns 404 from GitHub. The
+  // message must not hint that the repository exists.
   const mapped = toAppError(octokitError(404));
   assertEqual(mapped.statusCode, 404, "status");
   assertEqual(mapped.message, "GitHub repository not found", "message");
-});
-
-test("rate limiting (403 and 429) becomes a 429 with a rate-limit message", () => {
-  for (const status of [403, 429]) {
-    const mapped = toAppError(octokitError(status));
-    assertEqual(mapped.statusCode, 429, `status for ${status}`);
-    assert(
-      mapped.message.includes("rate limit"),
-      `message mentions the rate limit for ${status}`
-    );
-  }
+  assert(!/private|permission|access/i.test(mapped.message), "no existence hint");
 });
 
 test("upstream GitHub failures become a 502", () => {
@@ -145,4 +195,4 @@ test("an empty tree normalizes to an empty array", () => {
   assertEqual(normalizeTreeEntries([]), [], "empty");
 });
 
-report("githubService error mapping / normalization tests");
+await report("githubService error mapping / normalization tests");

@@ -138,4 +138,4 @@ test("the throwing wrapper returns owner and repo for valid input", () => {
   );
 });
 
-report("parseGithubRepositoryUrl() tests");
+await report("parseGithubRepositoryUrl() tests");

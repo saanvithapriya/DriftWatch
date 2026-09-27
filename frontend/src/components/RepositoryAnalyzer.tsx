@@ -1,5 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { analyzeGithubRepository } from "../services/api";
+import { githubConnectUrl } from "../auth/authApi";
+import { useAuth } from "../auth/AuthContext";
+import { ApiError, analyzeGithubRepository } from "../services/api";
 import type { RepositoryTree } from "../types/github";
 import { isLikelyGithubRepositoryUrl } from "../utils/githubUrl";
 import { ROOT_PATH, buildFileTree, createRepositoryRoot } from "../utils/fileTree";
@@ -11,10 +13,12 @@ type Status = "idle" | "loading" | "success" | "error";
 type View = "tree" | "diagram";
 
 export function RepositoryAnalyzer() {
+  const { user } = useAuth();
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<RepositoryTree | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   // Phase 1's file tree stays the default view; the diagram is opt-in, which
   // also means Mermaid does no work until the user asks for it.
   const [view, setView] = useState<View>("tree");
@@ -31,6 +35,7 @@ export function RepositoryAnalyzer() {
     if (trimmed === "") {
       setStatus("error");
       setResult(null);
+      setErrorStatus(null);
       setError("Please enter a GitHub repository URL.");
       return;
     }
@@ -38,6 +43,7 @@ export function RepositoryAnalyzer() {
     if (!isLikelyGithubRepositoryUrl(trimmed)) {
       setStatus("error");
       setResult(null);
+      setErrorStatus(null);
       setError(
         "Enter a repository URL in the form https://github.com/owner/repository"
       );
@@ -46,6 +52,7 @@ export function RepositoryAnalyzer() {
 
     setStatus("loading");
     setError(null);
+    setErrorStatus(null);
     setResult(null);
 
     try {
@@ -60,6 +67,7 @@ export function RepositoryAnalyzer() {
           ? caught.message
           : "Failed to fetch GitHub repository"
       );
+      setErrorStatus(caught instanceof ApiError ? caught.status : null);
       setStatus("error");
     }
   }
@@ -82,6 +90,10 @@ export function RepositoryAnalyzer() {
 
   const isLoading = status === "loading";
   const hasError = status === "error" && error !== null;
+  // 404 is GitHub deliberately hiding a private repository's existence, so the
+  // hint is phrased as a possibility and never confirms that the repo exists.
+  const mayNeedAccess =
+    hasError && errorStatus !== null && [401, 403, 404].includes(errorStatus);
 
   function openInDiagram(path: string): void {
     setCurrentPath(path);
@@ -95,7 +107,7 @@ export function RepositoryAnalyzer() {
         <div className="card-header">
           <h2 className="card-title">Analyze GitHub Repository</h2>
           <p className="card-desc">
-            Enter a public GitHub repository URL to analyze its structure.
+            Enter a GitHub repository URL to analyze its structure.
           </p>
         </div>
 
@@ -126,7 +138,9 @@ export function RepositoryAnalyzer() {
               </button>
             </div>
             <p className="form-hint">
-              Public repositories only · No authentication required
+              {user === null
+                ? "Public repositories · Connect GitHub to analyze private ones"
+                : `Signed in as ${user.login} · public and accessible private repositories`}
             </p>
           </div>
         </form>
@@ -139,6 +153,23 @@ export function RepositoryAnalyzer() {
                 Unable to analyze repository
               </strong>
               <span className="alert-body">{error}</span>
+              {mayNeedAccess && (
+                <span className="alert-body">
+                  {user === null ? (
+                    <>
+                      If it is private,{" "}
+                      <a href={githubConnectUrl()}>connect GitHub</a> and make
+                      sure your account has access.
+                    </>
+                  ) : (
+                    <>
+                      Signed in as {user.login}. Make sure this account has
+                      access to the repository and that the DriftWatch GitHub
+                      App is installed on it.
+                    </>
+                  )}
+                </span>
+              )}
             </div>
           </div>
         )}

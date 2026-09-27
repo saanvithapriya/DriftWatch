@@ -36,3 +36,14 @@ export interface GithubTreeSuccessResponse {
   success: true;
   data: RepositoryTree;
 }
+
+/**
+ * A GitHub credential belonging to one authenticated user.
+ *
+ * Only ever held server-side: it is resolved from a session above the service
+ * layer and passed down. It is never accepted from a client request and never
+ * serialized into a response.
+ */
+export interface GithubCredential {
+  token: string;
+}

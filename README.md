@@ -21,8 +21,12 @@ normalized file tree out. See below.
 explored one directory at a time as a Mermaid `graph TD` diagram, alongside the
 complete file tree.
 
-Code intelligence, dependency analysis, private repositories, and persistence
-do not exist yet — those belong to later phases.
+**Phase 3** adds GitHub App sign-in so private repositories you have access to
+can be analyzed too. Anonymous public analysis is unchanged, and the GitHub
+credential never reaches the browser.
+
+Code intelligence, dependency analysis and persistence do not exist yet —
+those belong to later phases.
 
 ## Project Structure
 
@@ -312,6 +316,164 @@ An empty repository shows `This repository has no files to visualize.` rather
 than an invalid diagram. If Mermaid fails to render, the page stays alive: the
 user sees `Unable to render this diagram.` with a suggestion to try a smaller
 directory, and the real error goes to the console.
+
+## Phase 3 — Private Repository Support
+
+Phase 3 lets a signed-in user analyze private repositories, while leaving
+anonymous public analysis exactly as it was.
+
+```text
+GitHub URL
+    ↓
+POST /api/github/tree          (unchanged contract)
+    ↓
+Auth/session middleware        (resolves a credential, or not)
+    ↓
+Controller                     (knows about identity)
+    ↓
+githubService(owner, repo, credential?)   (knows nothing about identity)
+    ↓
+Authenticated Octokit  OR  anonymous Octokit
+    ↓
+GitHub
+```
+
+**The GitHub credential never reaches the browser.** It is created by the
+backend, stored in a server-side session, and used only for outbound GitHub
+calls. The browser receives an opaque session id in an HttpOnly cookie and, at
+most, the signed-in user's public profile (`id`, `login`, `name`, `avatarUrl`).
+
+### Why a GitHub App
+
+DriftWatch uses a **GitHub App** rather than an OAuth App. An OAuth App would
+ask for an account-wide `repo` scope; a GitHub App is limited to the
+repositories it is installed on and to the permissions it declares, which is
+the least privilege that still answers "what files does this repository
+contain?".
+
+Only the **user authorization (user-to-server)** flow is used. The app's
+private key and App ID exist solely for server-to-server installation tokens,
+which DriftWatch never mints — so the private key is not configuration here and
+never exists in the process at all.
+
+### GitHub App setup
+
+Create a GitHub App under *Settings → Developer settings → GitHub Apps*:
+
+| Setting | Value |
+| --- | --- |
+| Callback URL | `http://localhost:5000/api/auth/github/callback` |
+| Request user authorization (OAuth) during installation | enabled |
+| Webhook | not required — disable it |
+| Repository permissions → **Contents** | Read-only |
+| Repository permissions → **Metadata** | Read-only (mandatory) |
+
+`Contents: Read-only` is what allows the repository tree to be read; no write
+permission of any kind is requested.
+
+Then install the app on the account or organization whose repositories you want
+to analyze, and set in `backend/.env`:
+
+```bash
+GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxx
+GITHUB_APP_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_APP_CALLBACK_URL=http://localhost:5000/api/auth/github/callback
+
+# Only when the backend is served over HTTPS
+# SESSION_COOKIE_SECURE=true
+```
+
+Leave them unset to run anonymously: public analysis still works and the
+sign-in route reports that it is unavailable. `.env` is never committed.
+
+### Authentication flow
+
+```text
+Browser clicks "Connect GitHub"
+    ↓
+GET /api/auth/github          → issues a random single-use state, redirects
+    ↓
+GitHub authorization / installation
+    ↓
+GET /api/auth/github/callback → requires + consumes the state, exchanges the
+                                code, reads the user, creates a session
+    ↓
+Set-Cookie: HttpOnly session id
+    ↓
+Redirect to the configured frontend origin only
+```
+
+The callback is protected against CSRF: the `state` is 32 random bytes, stored
+server-side, required on return, valid once, and expires after 10 minutes. The
+code is never exchanged if the state does not validate. The redirect target is
+always built from `FRONTEND_URL`, never from anything the browser supplies, so
+there is no open-redirect surface.
+
+### API endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/auth/github` | Starts authorization (503 if no app is configured) |
+| `GET /api/auth/github/callback` | Validates state, creates the session |
+| `GET /api/auth/me` | Safe profile, or `{ user: null }` |
+| `GET /api/auth/logout` | Destroys the session, revokes the token, clears the cookie |
+
+`POST /api/github/tree` is **unchanged** — same URL, same request body, same
+response contract. It simply uses the session's credential when one exists.
+A client cannot supply its own credential; the request body is never a source
+of authentication.
+
+### Session architecture
+
+Sessions live behind a `SessionStore` interface with an in-memory
+implementation. They hold the credential; the cookie holds only the opaque id.
+
+> **In-memory sessions are not production-ready.** They are lost on restart and
+> are not shared between processes, so a multi-instance deployment would sign
+> users out at random as requests land on different instances. The interface
+> exists so this can be replaced with Redis or a database without touching the
+> auth flow.
+
+### Security model
+
+- The credential is stored server-side only, never in `localStorage`,
+  `sessionStorage`, React state, a URL or a response body.
+- The session cookie is `HttpOnly` (unreadable by page JavaScript),
+  `SameSite=Lax`, `Path=/`, and `Secure` when `SESSION_COOKIE_SECURE=true`.
+- CORS names exactly one origin with `credentials: true` — never a wildcard,
+  which browsers reject alongside credentials anyway.
+- Errors are logged through a redactor that strips GitHub token patterns and
+  private-key blocks, and never serializes the error object, because Octokit
+  errors carry the originating request's headers.
+- Repository filenames remain escaped and are rendered as text, as in Phase 2.
+
+### Private repository behaviour
+
+| Caller | Repository | Result |
+| --- | --- | --- |
+| Anonymous | Public | Works |
+| Signed in | Public | Works |
+| Signed in, has access | Private | Works |
+| Anonymous | Private | `404 GitHub repository not found` |
+| Signed in, no access | Private | `404 GitHub repository not found` |
+
+GitHub deliberately answers 404 rather than 403 for private repositories the
+caller cannot see, so that their existence is not leaked. DriftWatch relays
+that unchanged. The UI adds a **conditional** hint ("If it is private, connect
+GitHub…") which never confirms that the repository exists.
+
+If GitHub rejects a stored credential, the session is invalidated, the cookie
+is cleared and the frontend returns to its signed-out state.
+
+### Production hardening still required
+
+1. Replace the in-memory session and state stores with a shared backing store.
+2. Serve over HTTPS and set `SESSION_COOKIE_SECURE=true`.
+3. Handle GitHub App user-token expiry/refresh if the app has expiring tokens
+   enabled (currently a rejected token simply ends the session).
+4. Make logout a `POST` with CSRF protection; it is a `GET` today.
+5. Add rate limiting to the auth routes.
+6. Rotate the client secret through a secret manager rather than `.env`.
 
 ## Frontend
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AuthControl } from "../auth/AuthControl";
 import { getHealth } from "../services/api";
 
 type HealthStatus = "checking" | "online" | "offline";
@@ -56,6 +57,7 @@ export function Header() {
           <span className="site-header__tagline">Repository Intelligence Platform</span>
         </div>
         <div className="site-header__status">
+          <AuthControl />
           <span className={dotClass} aria-hidden="true" />
           <span className="site-header__status-label">{statusLabel}</span>
         </div>

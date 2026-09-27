@@ -1,12 +1,15 @@
-import { getOctokit } from "../config/octokit.js";
+import { resolveOctokit } from "../config/octokit.js";
 import { AppError } from "../utils/appError.js";
 import type {
+  GithubCredential,
   RepositoryTree,
   RepositoryTreeNode,
 } from "../types/github.js";
 
 interface GithubApiError {
   status: number;
+  message?: string;
+  response?: { headers?: Record<string, unknown> };
 }
 
 export function isGithubApiError(error: unknown): error is GithubApiError {
@@ -19,19 +22,59 @@ export function isGithubApiError(error: unknown): error is GithubApiError {
 }
 
 /**
- * Translates an Octokit failure into a client-safe AppError. Raw Octokit
- * errors never leave this module.
+ * GitHub answers an exhausted *primary* rate limit with 403, not 429, so a
+ * 403 cannot be assumed to mean "forbidden". The two are separated by the
+ * rate-limit headers GitHub sends alongside, falling back to the message.
+ */
+function isRateLimited(error: GithubApiError): boolean {
+  const remaining = error.response?.headers?.["x-ratelimit-remaining"];
+  if (remaining === "0" || remaining === 0) return true;
+
+  const retryAfter = error.response?.headers?.["retry-after"];
+  if (typeof retryAfter === "string" && retryAfter !== "") return true;
+
+  return /rate limit|abuse detection/i.test(error.message ?? "");
+}
+
+/**
+ * Translates an Octokit failure into a client-safe AppError.
+ *
+ * Raw Octokit errors never leave this module: their messages can carry request
+ * details, so every branch returns a fixed message of our own.
+ *
+ *   401 -> the credential is missing, expired or revoked
+ *   403 -> the credential is valid but access is restricted (or rate limited)
+ *   404 -> not found, which for a private repository is GitHub deliberately
+ *          hiding existence; it is relayed unchanged so we do not leak it
+ *   429 -> rate limited
  */
 export function toAppError(error: unknown): AppError {
   if (isGithubApiError(error)) {
-    if (error.status === 404) {
-      return new AppError(404, "GitHub repository not found");
+    if (error.status === 401) {
+      return new AppError(
+        401,
+        "GitHub authentication failed. Please reconnect your GitHub account."
+      );
     }
-    if (error.status === 403 || error.status === 429) {
+
+    if (error.status === 429 || (error.status === 403 && isRateLimited(error))) {
       return new AppError(
         429,
         "GitHub API rate limit exceeded. Please try again later."
       );
+    }
+
+    if (error.status === 403) {
+      return new AppError(
+        403,
+        "Access to this GitHub repository is restricted by GitHub or its organization."
+      );
+    }
+
+    if (error.status === 404) {
+      // GitHub returns 404 rather than 403 for private repositories the caller
+      // cannot see. Saying anything more here would leak their existence.
+      return new AppError(404, "GitHub repository not found");
     }
   }
 
@@ -72,12 +115,22 @@ export function normalizeTreeEntries(
  *
  * This function is the single ingestion entry point, so a cache can later wrap
  * it without changing the API contract.
+ *
+ * WARNING for any future cache: once private repositories are reachable, a
+ * cache key of `owner/repo` alone is a data leak. Two callers can ask for the
+ * same repository and legitimately be entitled to different answers, so the
+ * key must include the authorization boundary (the credential's identity), and
+ * anonymous results must never be served to authenticated callers or the
+ * reverse. Caching is deliberately not implemented here.
  */
 export async function fetchRepositoryTree(
   owner: string,
-  repo: string
+  repo: string,
+  credential?: GithubCredential
 ): Promise<RepositoryTree> {
-  const octokit = getOctokit();
+  // The credential simply arrives; this module never works out who the caller
+  // is, never reads a request, a cookie or a session.
+  const octokit = resolveOctokit(credential);
 
   let defaultBranch: string;
   let canonicalOwner: string;

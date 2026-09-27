@@ -118,4 +118,4 @@ test("a file path resolves but has no children to drill into", () => {
   assertEqual(node?.children.length, 0, "no children");
 });
 
-report("architecture-view navigation tests");
+await report("architecture-view navigation tests");
