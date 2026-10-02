@@ -9,6 +9,7 @@
  */
 import { assert, assertEqual, report, test } from "../utils/testHarness";
 import {
+  parseCallGraphAnalysis,
   parseDependencyAnalysis,
   parseRepositoryTree,
   parseWorkflowAnalysis,
@@ -311,6 +312,126 @@ test("hostile workflow strings pass through as data, never executed", () => {
     parsed?.workflows[0].jobs[0].steps[0].run,
     "rm -rf /",
     "kept verbatim as a string for React to escape; never run"
+  );
+});
+
+// ── call graph analysis ──────────────────────────────────────────────────
+
+const CG_NODE = {
+  id: "a.ts::main",
+  file: "a.ts",
+  name: "main",
+  displayName: "main",
+  startLine: 1,
+  endLine: 3,
+  kind: "function-declaration",
+  exported: true,
+};
+
+const CG_EDGE = { source: "a.ts::main", target: "a.ts::helper", callExpression: "helper()", line: 2, callCount: 1 };
+
+const CG_ENTRY_POINT_ENTRY = { id: "a.ts::main", file: "a.ts", name: "main", startLine: 1, endLine: 3 };
+
+const CG_STATS = {
+  functionsDiscovered: 2,
+  functionsReachable: 2,
+  edges: 1,
+  unresolvedCalls: 0,
+  externalCalls: 0,
+  maxDepth: 1,
+};
+
+test("a well-formed call graph analysis is accepted", () => {
+  const payload = {
+    repository: REPO,
+    entryPoint: { functionId: "a.ts::main", file: "a.ts", name: "main" },
+    nodes: [CG_NODE],
+    edges: [CG_EDGE],
+    availableEntryPoints: [CG_ENTRY_POINT_ENTRY],
+    stats: CG_STATS,
+    truncated: false,
+  };
+  assert(parseCallGraphAnalysis(payload) !== null, "accepted");
+});
+
+test("a null entry point (no functions in the repository) is valid", () => {
+  const payload = {
+    repository: REPO,
+    entryPoint: null,
+    nodes: [],
+    edges: [],
+    availableEntryPoints: [],
+    stats: { ...CG_STATS, functionsDiscovered: 0, functionsReachable: 0, edges: 0, maxDepth: 0 },
+    truncated: false,
+  };
+  assert(parseCallGraphAnalysis(payload) !== null, "accepted");
+});
+
+test("a truncationReason is accepted when present", () => {
+  const payload = {
+    repository: REPO,
+    entryPoint: { functionId: "a.ts::main", file: "a.ts", name: "main" },
+    nodes: [CG_NODE],
+    edges: [],
+    availableEntryPoints: [CG_ENTRY_POINT_ENTRY],
+    stats: CG_STATS,
+    truncated: true,
+    truncationReason: "max_nodes",
+  };
+  assert(parseCallGraphAnalysis(payload) !== null, "accepted");
+});
+
+test("malformed call graph analyses are all rejected", () => {
+  const good = {
+    repository: REPO,
+    entryPoint: { functionId: "a.ts::main", file: "a.ts", name: "main" },
+    nodes: [CG_NODE],
+    edges: [CG_EDGE],
+    availableEntryPoints: [CG_ENTRY_POINT_ENTRY],
+    stats: CG_STATS,
+    truncated: false,
+  };
+  const bad: unknown[] = [
+    null,
+    undefined,
+    "string",
+    42,
+    [],
+    {},
+    { ...good, repository: undefined },
+    { ...good, entryPoint: "x" },
+    { ...good, entryPoint: { functionId: 1, file: "a.ts", name: "main" } },
+    { ...good, nodes: undefined },
+    { ...good, nodes: [{ ...CG_NODE, id: undefined }] },
+    { ...good, nodes: [{ ...CG_NODE, exported: "yes" }] },
+    { ...good, edges: [{ ...CG_EDGE, callCount: "1" }] },
+    { ...good, availableEntryPoints: [{ id: "a" }] },
+    { ...good, stats: undefined },
+    { ...good, stats: { ...CG_STATS, unresolvedCalls: "0" } },
+    { ...good, truncated: "no" },
+    { ...good, truncationReason: 42 },
+  ];
+  for (const payload of bad) {
+    assertEqual(parseCallGraphAnalysis(payload), null, `rejected: ${JSON.stringify(payload) ?? "undefined"}`);
+  }
+});
+
+test("hostile call graph strings pass through as data, never executed", () => {
+  const payload = {
+    repository: REPO,
+    entryPoint: { functionId: "a.ts::main", file: "a.ts", name: '"] --> evil["' },
+    nodes: [{ ...CG_NODE, displayName: "<script>alert(1)</script>" }],
+    edges: [{ ...CG_EDGE, callExpression: "sequenceDiagram\nactor Evil" }],
+    availableEntryPoints: [CG_ENTRY_POINT_ENTRY],
+    stats: CG_STATS,
+    truncated: false,
+  };
+  const parsed = parseCallGraphAnalysis(payload);
+  assert(parsed !== null, "accepted as data");
+  assertEqual(
+    parsed?.nodes[0].displayName,
+    "<script>alert(1)</script>",
+    "kept verbatim as a string for the Mermaid generator to escape; never interpreted here"
   );
 });
 

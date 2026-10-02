@@ -1,7 +1,9 @@
+import type { CallGraphAnalysis } from "../types/callGraph";
 import type { DependencyAnalysis } from "../types/dependencies";
 import type { WorkflowAnalysis } from "../types/workflows";
 import type { GithubTreeResponse, RepositoryTree } from "../types/github";
 import {
+  parseCallGraphAnalysis,
   parseDependencyAnalysis,
   parseRepositoryTree,
   parseWorkflowAnalysis,
@@ -142,6 +144,43 @@ export async function analyzeWorkflows(url: string): Promise<WorkflowAnalysis> {
   }
 
   const data = parseWorkflowAnalysis(body.data);
+  if (data === null) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  return data;
+}
+
+/**
+ * Phase 6: static function call graph for a repository, from `entryPoint`
+ * (or the backend's own deterministic default when omitted). This is
+ * statically inferred from source text — it is never runtime tracing.
+ */
+export async function analyzeCallGraph(
+  url: string,
+  entryPoint?: string
+): Promise<CallGraphAnalysis> {
+  const response = await request("/api/github/call-graph", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entryPoint === undefined ? { url } : { url, entryPoint }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      readErrorMessage(payload) ?? `Request failed with status ${response.status}`
+    );
+  }
+
+  const body = payload as { success?: unknown; data?: unknown } | null;
+  if (body === null || body.success !== true) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  const data = parseCallGraphAnalysis(body.data);
   if (data === null) {
     throw new Error("Unexpected response from the server");
   }

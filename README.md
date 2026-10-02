@@ -33,8 +33,12 @@ files import which.
 dependency graphs, with each job's steps alongside. Workflows are analyzed
 statically and never executed.
 
-Function call graphs, Git history and persistence do not exist yet — those
-belong to later phases.
+**Phase 6** adds Call Flow: pick an entry-point function in a JavaScript or
+TypeScript repository and see the statically inferred calls reachable from
+it, as a Mermaid sequence diagram. Call Flow is statically inferred from
+source code and is not runtime tracing.
+
+Git history and persistence do not exist yet — those belong to later phases.
 
 ## Project Structure
 
@@ -933,12 +937,161 @@ invalidates the cache — the key is the analysis identity, not the URL alone.
 - Workflow-level `env`, `defaults`, `concurrency` and `permissions` are not
   modelled.
 
+## Phase 6 — Function Call Graph
+
+Call Flow lets you pick an entry-point function in a JavaScript or TypeScript
+repository and see the calls statically reachable from it, drawn as a Mermaid
+sequence diagram.
+
+> **Call Flow is statically inferred from source code and is not runtime
+> tracing.** No repository code is ever executed to produce it — not with
+> `eval`, `new Function`, `child_process`, or any other means. Everything
+> shown is inferred by reading the AST.
+
+### Static function analysis
+
+Reuses Phase 4's Tree-sitter setup, source acquisition and import resolver
+verbatim — there is no second GitHub downloader, parser, or resolution
+system. One additional pass over the same parsed files extracts:
+
+- **Functions**: declarations, expressions, arrow functions, class methods
+  and constructors, object-literal methods, class-property arrow functions,
+  and exported/default-exported functions — in `.js`, `.jsx`, `.ts` and
+  `.tsx`, including inside JSX.
+- **Calls**: direct (`foo()`), member (`obj.foo()`), `await`, `new`, and a
+  callback heuristic — a bare function reference passed as an argument
+  (`items.map(transform)`, `Promise.resolve().then(handle)`) is treated as a
+  probable call, but only when it resolves to a real function; an
+  unresolved reference is silently dropped rather than counted as a finding.
+
+### Function identities
+
+Ids are deterministic: `<path>::<name>` for a named function
+(`src/services/orderService.ts::createOrder`), `<path>::<ClassName>.<method>`
+for a class member, and `<path>::<context>@<line>` for anything with no
+stable name (an anonymous callback). A same-file naming collision is broken
+by appending the line number, then a counter — always deterministically, from
+the file's own content.
+
+### Static call resolution
+
+In priority order: a same-file function, a same-file `const x = () => {}`
+binding, a named/aliased/default/namespace import, one hop of `export …
+from`, a class method via `this.method()`, and an object-literal method via
+`obj.method()`. Nothing is ever guessed: a dynamic call
+(`obj[name]()`, `const fn = getHandler(); fn();`) is reported as unresolved,
+and a call resolved to something outside the repository (`axios.get()`) is
+reported as external — neither ever becomes a fabricated internal edge.
+
+### Entry-point selection
+
+The **Entry File** and **Entry Function** selectors list every extracted
+function, grouped by file. If no entry point is chosen, the backend picks one
+deterministically: an exported `main`, then any `main`, then a default
+export, then the first function by sorted id — never inventing one when a
+repository has no statically extractable functions.
+
+### Recursion and cycles
+
+Traversal is breadth-first with a visited set, so `a -> b -> a` and direct
+self-recursion (`factorial -> factorial`) both terminate — a cycle
+contributes at most one node and, for each direction actually called, one
+edge, never an infinite one.
+
+### Graph limits
+
+| Limit | Value | Protects |
+| --- | --- | --- |
+| `MAX_CALL_GRAPH_NODES` | 100 | diagram size, traversal time |
+| `MAX_CALL_GRAPH_DEPTH` | 10 | diagram size, traversal time |
+
+Reaching either produces a `truncated: true` result with a `truncationReason`
+of `max_nodes` or `max_depth` — never silently. A defensive whole-repository
+ceiling (4,000 functions, 20,000 edges) also exists purely to bound memory
+against a pathological file; realistic repositories, already bounded by Phase
+4's file-count and file-size limits, never approach it.
+
+### Mermaid sequence diagram
+
+Participant ids are always sequential (`function_1`, `function_2`, …), never
+derived from source text, and every label passes through the same
+entity-code escaping the architecture and CI/CD diagrams use
+(`escapeLabel`), so a malicious function name cannot inject a new Mermaid
+directive or markup — `mermaid.render()` also runs with `securityLevel:
+"strict"`, sanitising the output regardless.
+
+### Caching
+
+The backend keeps a short-lived (5-minute), size-bounded (20-entry) in-memory
+cache of the parsed function/call index, keyed by repository **and** by the
+caller's identity (a hash of their credential, or an anonymous marker) — so
+switching the selected entry point re-runs only the traversal, with no new
+GitHub calls and no re-parsing, while a different user's private-repository
+analysis can never be served from another user's cache entry. Moving between
+tabs issues no further requests, and a fresh **Analyze Repository** always
+starts a new analysis.
+
+### API
+
+`POST /api/github/call-graph`
+
+```json
+{ "url": "https://github.com/owner/repository", "entryPoint": "src/server.ts::startServer" }
+```
+
+`entryPoint` is optional; omit it for the backend's own default.
+
+```json
+{
+  "success": true,
+  "data": {
+    "repository": { "owner": "…", "name": "…", "defaultBranch": "…" },
+    "entryPoint": { "functionId": "src/server.ts::startServer", "file": "src/server.ts", "name": "startServer" },
+    "nodes": [
+      { "id": "src/server.ts::startServer", "file": "src/server.ts", "name": "startServer",
+        "displayName": "startServer", "startLine": 10, "endLine": 15,
+        "kind": "function-declaration", "exported": true }
+    ],
+    "edges": [
+      { "source": "src/server.ts::startServer", "target": "src/auth/login.ts::authenticate",
+        "callExpression": "authenticate()", "line": 12, "callCount": 1 }
+    ],
+    "availableEntryPoints": [
+      { "id": "src/server.ts::startServer", "file": "src/server.ts", "name": "startServer", "startLine": 10, "endLine": 15 }
+    ],
+    "stats": {
+      "functionsDiscovered": 18, "functionsReachable": 7, "edges": 9,
+      "unresolvedCalls": 2, "externalCalls": 1, "maxDepth": 4
+    },
+    "truncated": false
+  }
+}
+```
+
+URL validation, authentication and error semantics (400/401/403/404/429/502)
+are the existing shared ones — nothing is duplicated.
+
+### Known limitations
+
+- A member chain deeper than one hop (`obj.foo.bar()`) is recorded as a call
+  site but not resolved.
+- An object literal's method table only covers `const obj = { m() {} }` at
+  the point it is declared, not properties added elsewhere.
+- `new Foo()` resolves to `Foo`'s constructor only when `Foo` is statically
+  visible (a same-file class, or one reached through import resolution).
+- Reusable-workflow-style indirection (dependency injection, dynamic
+  dispatch tables, higher-order factories that return functions) is not
+  modelled — this is source-level static analysis, not type inference or
+  data-flow analysis, and dynamic calls it cannot prove are reported as
+  unresolved rather than guessed.
+
 ## Frontend
 
 The home page provides a repository URL field and an **Analyze Repository**
 button. It shows a loading state while fetching, reports errors inline, and on
 success displays the repository name, default branch, and file and directory
-counts, followed by the two views described above.
+counts, followed by the File Tree, Architecture, Dependencies, CI/CD and Call
+Flow views described above.
 
 
 ## Testing
@@ -949,12 +1102,13 @@ Frontend unit tests are plain TypeScript with no test-framework dependency:
 npm test --workspace=frontend
 ```
 
-This covers the tree builder and its size metadata, the Mermaid generator
-(including ID collisions, escaping, the max-node guard and determinism),
-architecture-view navigation, and the dependency graph model (layout,
-filtering, focus). The backend has its own suite for URL parsing, GitHub error
-mapping, credential isolation, the auth flow, Tree-sitter extraction,
-dependency resolution and graph construction:
+This covers the tree builder and its size metadata, the Mermaid generators for
+the architecture, CI/CD and Call Flow diagrams (including ID collisions,
+escaping, the max-node guard and determinism), architecture-view navigation,
+and the dependency graph model (layout, filtering, focus). The backend has its
+own suite for URL parsing, GitHub error mapping, credential isolation, the
+auth flow, Tree-sitter function/call extraction, cross-file call resolution,
+call graph traversal, and workflow and dependency parsing:
 
 ```bash
 npm test --workspace=backend

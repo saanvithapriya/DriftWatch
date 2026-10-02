@@ -1,6 +1,8 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { githubConnectUrl } from "../auth/authApi";
 import { useAuth } from "../auth/AuthContext";
+import { CallFlowExplorer } from "../callgraph/CallFlowExplorer";
+import { useCallGraphAnalysis } from "../callgraph/useCallGraphAnalysis";
 import { DependencyExplorer } from "../dependencies/DependencyExplorer";
 import { useDependencyAnalysis } from "../dependencies/useDependencyAnalysis";
 import { WorkflowExplorer } from "../workflows/WorkflowExplorer";
@@ -14,7 +16,7 @@ import { RepositoryDiagram } from "./RepositoryDiagram";
 import { RepositorySummary } from "./RepositorySummary";
 
 type Status = "idle" | "loading" | "success" | "error";
-type View = "tree" | "diagram" | "dependencies" | "workflows";
+type View = "tree" | "diagram" | "dependencies" | "workflows" | "callgraph";
 
 export function RepositoryAnalyzer() {
   const { user } = useAuth();
@@ -112,6 +114,13 @@ export function RepositoryAnalyzer() {
   const workflowState = useWorkflowAnalysis(
     analyzedUrl,
     view === "workflows",
+    analysisId
+  );
+
+  // Same pattern again, plus its own entry-point selection (Phase 6).
+  const callGraphState = useCallGraphAnalysis(
+    analyzedUrl,
+    view === "callgraph",
     analysisId
   );
 
@@ -269,9 +278,29 @@ export function RepositoryAnalyzer() {
               >
                 CI/CD
               </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-callgraph"
+                aria-selected={view === "callgraph"}
+                aria-controls="panel-callgraph"
+                className={`viewtabs__tab${view === "callgraph" ? " is-active" : ""}`}
+                onClick={() => setView("callgraph")}
+              >
+                Call Flow
+              </button>
             </div>
 
-            {view === "workflows" ? (
+            {view === "callgraph" ? (
+              <div
+                className="card diagram-card"
+                id="panel-callgraph"
+                role="tabpanel"
+                aria-labelledby="tab-callgraph"
+              >
+                <CallFlowExplorer state={callGraphState} />
+              </div>
+            ) : view === "workflows" ? (
               <div
                 className="card diagram-card"
                 id="panel-workflows"

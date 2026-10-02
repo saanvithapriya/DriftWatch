@@ -6,6 +6,7 @@
  * must surface as an ordinary error, never an uncaught TypeError that
  * unmounts the React tree.
  */
+import type { CallGraphAnalysis, CallGraphEdge, CallGraphEntryPoint, CallGraphFunctionNode } from "../types/callGraph";
 import type { DependencyAnalysis } from "../types/dependencies";
 import type { RepositoryTree } from "../types/github";
 import type {
@@ -224,4 +225,122 @@ export function parseWorkflowAnalysis(payload: unknown): WorkflowAnalysis | null
   }
 
   return data as unknown as WorkflowAnalysis;
+}
+
+/** Validates one call graph function node, inventing nothing. */
+function parseCallGraphNode(value: unknown): CallGraphFunctionNode | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.file !== "string" ||
+    typeof raw.name !== "string" ||
+    typeof raw.displayName !== "string" ||
+    typeof raw.kind !== "string" ||
+    typeof raw.exported !== "boolean" ||
+    typeof raw.startLine !== "number" ||
+    typeof raw.endLine !== "number"
+  ) {
+    return null;
+  }
+  return raw as unknown as CallGraphFunctionNode;
+}
+
+function parseCallGraphEdge(value: unknown): CallGraphEdge | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.source !== "string" ||
+    typeof raw.target !== "string" ||
+    typeof raw.callExpression !== "string" ||
+    typeof raw.line !== "number" ||
+    typeof raw.callCount !== "number"
+  ) {
+    return null;
+  }
+  return raw as unknown as CallGraphEdge;
+}
+
+function parseCallGraphEntryPointEntry(value: unknown): CallGraphEntryPoint | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.file !== "string" ||
+    typeof raw.name !== "string" ||
+    typeof raw.startLine !== "number" ||
+    typeof raw.endLine !== "number"
+  ) {
+    return null;
+  }
+  return raw as unknown as CallGraphEntryPoint;
+}
+
+/**
+ * Confirms a payload really is a `CallGraphAnalysis` before it reaches the
+ * UI. Same reasoning as the repository tree, dependency graph and workflow
+ * analysis: a backend answering with the wrong shape must surface as an
+ * ordinary error rather than an uncaught TypeError that unmounts the React
+ * tree.
+ */
+export function parseCallGraphAnalysis(payload: unknown): CallGraphAnalysis | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const data = payload as Record<string, unknown>;
+
+  const repository = data.repository;
+  if (typeof repository !== "object" || repository === null) return null;
+  const repo = repository as Record<string, unknown>;
+  if (
+    typeof repo.owner !== "string" ||
+    typeof repo.name !== "string" ||
+    typeof repo.defaultBranch !== "string"
+  ) {
+    return null;
+  }
+
+  if (data.entryPoint !== null) {
+    if (typeof data.entryPoint !== "object") return null;
+    const entry = data.entryPoint as Record<string, unknown>;
+    if (
+      typeof entry.functionId !== "string" ||
+      typeof entry.file !== "string" ||
+      typeof entry.name !== "string"
+    ) {
+      return null;
+    }
+  }
+
+  if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) return null;
+  if (!Array.isArray(data.availableEntryPoints)) return null;
+
+  for (const node of data.nodes) {
+    if (parseCallGraphNode(node) === null) return null;
+  }
+  for (const edge of data.edges) {
+    if (parseCallGraphEdge(edge) === null) return null;
+  }
+  for (const entryPoint of data.availableEntryPoints) {
+    if (parseCallGraphEntryPointEntry(entryPoint) === null) return null;
+  }
+
+  const stats = data.stats;
+  if (typeof stats !== "object" || stats === null) return null;
+  const statsRecord = stats as Record<string, unknown>;
+  for (const key of [
+    "functionsDiscovered",
+    "functionsReachable",
+    "edges",
+    "unresolvedCalls",
+    "externalCalls",
+    "maxDepth",
+  ]) {
+    if (typeof statsRecord[key] !== "number") return null;
+  }
+
+  if (typeof data.truncated !== "boolean") return null;
+  if (data.truncationReason !== undefined && typeof data.truncationReason !== "string") {
+    return null;
+  }
+
+  return data as unknown as CallGraphAnalysis;
 }
