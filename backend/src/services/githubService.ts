@@ -2,6 +2,7 @@ import { resolveOctokit } from "../config/octokit.js";
 import { AppError } from "../utils/appError.js";
 import type {
   GithubCredential,
+  RepositoryInfo,
   RepositoryTree,
   RepositoryTreeNode,
 } from "../types/github.js";
@@ -123,11 +124,22 @@ export function normalizeTreeEntries(
  * anonymous results must never be served to authenticated callers or the
  * reverse. Caching is deliberately not implemented here.
  */
-export async function fetchRepositoryTree(
+export interface RepositorySnapshot extends RepositoryTree {
+  /** Repository size in kilobytes, as GitHub reports it. */
+  sizeKb: number;
+}
+
+/**
+ * Fetches repository metadata and its recursive tree.
+ *
+ * Shared by Phase 1's tree endpoint and Phase 4's dependency analysis so that
+ * neither duplicates the GitHub calls or the error handling. Two API calls.
+ */
+export async function fetchRepositorySnapshot(
   owner: string,
   repo: string,
   credential?: GithubCredential
-): Promise<RepositoryTree> {
+): Promise<RepositorySnapshot> {
   // The credential simply arrives; this module never works out who the caller
   // is, never reads a request, a cookie or a session.
   const octokit = resolveOctokit(credential);
@@ -135,12 +147,14 @@ export async function fetchRepositoryTree(
   let defaultBranch: string;
   let canonicalOwner: string;
   let canonicalName: string;
+  let sizeKb: number;
 
   try {
     const { data } = await octokit.rest.repos.get({ owner, repo });
     defaultBranch = data.default_branch;
     canonicalOwner = data.owner.login;
     canonicalName = data.name;
+    sizeKb = typeof data.size === "number" ? data.size : 0;
   } catch (error) {
     throw toAppError(error);
   }
@@ -165,14 +179,96 @@ export async function fetchRepositoryTree(
       // GitHub sets this when the tree was too large to return in full. It is
       // passed through so the frontend never treats a partial tree as complete.
       truncated: data.truncated === true,
+      sizeKb,
     };
   } catch (error) {
     // A repository with no commits yet has no tree to resolve; that is an
     // empty repository rather than a failure.
     if (isGithubApiError(error) && error.status === 409) {
-      return { repository, tree: [], truncated: false };
+      return { repository, tree: [], truncated: false, sizeKb };
     }
 
+    throw toAppError(error);
+  }
+}
+
+/**
+ * Phase 1's repository tree. Unchanged contract: the snapshot's extra
+ * metadata is internal and never reaches the API response.
+ */
+export async function fetchRepositoryTree(
+  owner: string,
+  repo: string,
+  credential?: GithubCredential
+): Promise<RepositoryTree> {
+  const { repository, tree, truncated } = await fetchRepositorySnapshot(
+    owner,
+    repo,
+    credential
+  );
+  return { repository, tree, truncated };
+}
+
+/**
+ * Repository metadata only — one call, no tree.
+ *
+ * Phase 7's history endpoints need the canonical owner/name/defaultBranch for
+ * their response envelopes, but have no use for the (potentially large)
+ * recursive tree `fetchRepositorySnapshot` also fetches. Calling that here
+ * would cost an extra, wasted `git.getTree` request on every history,
+ * commit, compare and file-history call.
+ */
+export async function fetchRepositoryInfo(
+  owner: string,
+  repo: string,
+  credential?: GithubCredential
+): Promise<RepositoryInfo> {
+  const octokit = resolveOctokit(credential);
+
+  try {
+    const { data } = await octokit.rest.repos.get({ owner, repo });
+    return {
+      owner: data.owner.login,
+      name: data.name,
+      defaultBranch: data.default_branch,
+    };
+  } catch (error) {
+    throw toAppError(error);
+  }
+}
+
+/**
+ * Recursive repository tree as of an arbitrary ref/sha — unlike
+ * `fetchRepositorySnapshot`, which always reads the default branch.
+ *
+ * Phase 7's impact analysis needs the dependency graph as it existed at the
+ * comparison's `head` commit, which is not necessarily the default branch.
+ * Reuses the same `git.getTree` call and entry normalization as the
+ * snapshot path; nothing about tree handling is duplicated.
+ */
+export async function fetchTreeAtRef(
+  owner: string,
+  repo: string,
+  ref: string,
+  credential?: GithubCredential
+): Promise<{ tree: RepositoryTreeNode[]; truncated: boolean }> {
+  const octokit = resolveOctokit(credential);
+
+  try {
+    const { data } = await octokit.rest.git.getTree({
+      owner,
+      repo,
+      tree_sha: ref,
+      recursive: "1",
+    });
+
+    return {
+      tree: normalizeTreeEntries(data.tree),
+      truncated: data.truncated === true,
+    };
+  } catch (error) {
+    // A ref that does not exist is the caller's mistake (an invalid sha),
+    // not an upstream failure — surfaced as 404 like everything else here.
     throw toAppError(error);
   }
 }

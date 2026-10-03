@@ -535,6 +535,14 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   max-width: 360px;
 }
 
+.diagram-placeholder__hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  opacity: 0.8;
+  text-align: center;
+  max-width: 360px;
+}
+
 /* ============================================================
    File tree
    ============================================================ */
@@ -650,6 +658,11 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .empty-state__icon {
   font-size: 2rem;
   opacity: 0.25;
+}
+
+.empty-state__title {
+  font-size: 1rem;
+  color: var(--text-primary);
 }
 
 .empty-state__text {
@@ -984,3 +997,716 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   align-items: center;
   gap: var(--space-2);
 }
+
+/* ── Phase 4: dependency explorer ──────────────────────────────────────── */
+
+.depexplorer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.depstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.depstats__item { margin: 0; }
+
+.depstats__item dt {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.depstats__item dd {
+  margin: 2px 0 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.depcontrols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.depcontrols__search { flex: 1 1 260px; min-width: 200px; }
+
+.depcontrols__count {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.depflow {
+  height: 560px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* React Flow node chrome, themed to match the rest of the application. */
+.depflow .react-flow__node.depflow-node {
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  width: 200px;
+  text-align: left;
+}
+
+.depflow .react-flow__node.depflow-node.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+.depnode { display: flex; flex-direction: column; gap: 2px; }
+.depnode__name { font-weight: 600; }
+
+.depnode__dir {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.depflow .react-flow__edge.depflow-edge .react-flow__edge-path {
+  stroke: var(--border);
+}
+
+.depflow .react-flow__edge.depflow-edge.is-active .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.depdetails { padding: var(--space-4); }
+
+.depdetails__path {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.depdetails__counts {
+  margin: var(--space-1) 0 var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.depdetails__lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.depdetails__heading {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.depdetails__list {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.depdetails__empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ── Phase 5: CI/CD workflow explorer ─────────────────────────────────── */
+
+.wf { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.wf-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.wf-toolbar__count {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.wf-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); }
+.wf-head__name { margin: 0; font-size: 1rem; color: var(--text-primary); }
+
+.wf-head__path {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.wf-triggers { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+
+.wf-triggers__label {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.wf-triggers__none { font-size: 0.8125rem; color: var(--text-muted); }
+
+.wf-triggers__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wf-trigger {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+}
+
+.wf-trigger__event { font-family: var(--font-mono); color: var(--text-primary); }
+.wf-trigger__detail { color: var(--text-muted); }
+
+.wf-jobs { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.wf-jobchip {
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.wf-jobchip:hover { color: var(--text-primary); background: var(--surface-hover); }
+
+.wf-jobchip.is-active {
+  color: var(--text-primary);
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.wf-details { padding: var(--space-4); }
+.wf-details__name { margin: 0 0 var(--space-3); font-size: 0.95rem; color: var(--text-primary); }
+
+.wf-details__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin: 0 0 var(--space-3);
+}
+
+.wf-details__meta dt {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.wf-details__meta dd { margin: 2px 0 0; font-size: 0.875rem; color: var(--text-primary); }
+
+.wf-details__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.wf-details__label {
+  display: inline-block;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.wf-code {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.wf-steps {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.wf-step { display: flex; flex-direction: column; gap: 2px; }
+.wf-step__name { font-size: 0.8125rem; color: var(--text-primary); }
+.wf-step__flags { font-size: 0.6875rem; color: var(--text-muted); }
+
+.wf-run {
+  margin: 0;
+  padding: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* ── Phase 7: Git history / evolution / impact ──────────────────────── */
+
+.hx { display: flex; flex-direction: column; gap: var(--space-5); }
+
+.hx-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.hx-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.hx-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+}
+.hx-section > summary::-webkit-details-marker { display: none; }
+.hx-section > summary::after {
+  content: "+";
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.hx-section[open] > summary::after { content: "–"; }
+.hx-section > summary:hover { background: var(--surface-hover); }
+
+.hx-section__body {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.hx-timeline { display: flex; flex-direction: column; }
+
+.hx-commit {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-2);
+  border: none;
+  border-left: 2px solid var(--border-subtle);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+.hx-commit:hover { background: var(--surface-hover); }
+.hx-commit.is-selected { border-left-color: var(--accent); background: var(--accent-muted); }
+
+.hx-commit__sha {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--accent);
+  background: var(--surface-secondary);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+}
+
+.hx-commit__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.hx-commit__message {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hx-commit__meta { font-size: 0.75rem; color: var(--text-muted); display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.hx-stat { font-family: var(--font-mono); font-size: 0.75rem; white-space: nowrap; }
+.hx-stat--add { color: var(--success); }
+.hx-stat--del { color: var(--error); }
+
+.hx-badge {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.hx-badge--added { color: var(--success); background: var(--success-muted); }
+.hx-badge--removed { color: var(--error); background: var(--error-muted); }
+.hx-badge--modified, .hx-badge--changed { color: var(--accent); background: var(--accent-muted); }
+.hx-badge--renamed, .hx-badge--copied { color: var(--warning); background: var(--warning-muted); }
+.hx-badge--unchanged { color: var(--text-muted); background: var(--surface-secondary); }
+
+.hx-filelist { display: flex; flex-direction: column; gap: var(--space-1); max-height: 360px; overflow-y: auto; }
+.hx-filerow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+}
+.hx-filerow:hover { background: var(--surface-hover); }
+.hx-filerow__path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--text-primary); }
+
+.hx-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+.hx-table th, .hx-table td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+.hx-table th { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.02em; }
+.hx-table td { color: var(--text-primary); }
+.hx-table tbody tr:hover { background: var(--surface-hover); }
+.hx-table-wrapper { overflow-x: auto; }
+
+.hx-hotspot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-secondary);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.hx-hotspot:hover { background: var(--surface-hover); border-color: var(--border); }
+.hx-hotspot__path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 0.8125rem; }
+.hx-hotspot__count { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+
+.hx-compare-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); }
+.hx-compare-field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 220px; }
+.hx-compare-field label { font-size: 0.75rem; color: var(--text-muted); }
+
+.hx-impact-wrapper {
+  position: relative;
+  height: 480px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.hx-impact-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.hx-impact-node {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border);
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+}
+.hx-impact-node--changed { border-color: var(--error); background: var(--error-muted); }
+.hx-impact-node--direct { border-color: var(--accent); background: var(--accent-muted); }
+.hx-impact-node--transitive { border-color: var(--warning); background: var(--warning-muted); }
+.hx-impact-node--unresolved { border-color: var(--text-muted); border-style: dashed; }
+.hx-impact-node.is-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── Phase 8: Database schema / ER graph ─────────────────────────────── */
+
+.sch { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.sch-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.sch-stats { display: flex; flex-wrap: wrap; gap: var(--space-4); font-size: 0.8125rem; color: var(--text-secondary); }
+.sch-stats strong { color: var(--text-primary); }
+
+.sch-provider-pills { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.sch-provider-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+}
+.sch-provider-pill strong { color: var(--text-primary); }
+.sch-provider-pill--prisma { border-color: rgba(79, 142, 247, 0.35); background: var(--accent-muted); }
+.sch-provider-pill--sql { border-color: rgba(210, 153, 34, 0.35); background: var(--warning-muted); }
+.sch-provider-pill--mongoose { border-color: rgba(63, 185, 80, 0.35); background: var(--success-muted); }
+
+.sch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.sch-toolbar__search { flex: 1 1 260px; min-width: 200px; }
+
+/* Graph + details panel side by side, so opening a node's details never
+   hides the graph (spec section 15). Stacks on narrow viewports. */
+.sch-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.sch-wrapper {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 620px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.sch-fitview-btn {
+  font-size: 0.75rem;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+}
+
+.sch-minimap { border-radius: var(--radius-sm); overflow: hidden; }
+
+.sch-details-panel {
+  flex: 0 0 320px;
+  width: 320px;
+  max-height: 620px;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.sch-details-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.sch-details-panel__close {
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px var(--space-2);
+}
+
+.sch-details-panel .depdetails__heading { margin-top: var(--space-3); }
+
+@media (max-width: 900px) {
+  .sch-layout { flex-direction: column; }
+  .sch-details-panel { width: 100%; flex-basis: auto; max-height: 320px; }
+}
+
+/* The ER "table" node: a header (model name + provider badge), one row per
+   field, and a footer summary — deliberately plain HTML/CSS, no Mermaid
+   (spec section 15). Handles on all four sides let edges route from
+   whichever side actually faces the other model (section 5). */
+.sch-node {
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+  text-align: left;
+  font-size: 0.75rem;
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.sch-node.is-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sch-node.is-match { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-ring); }
+
+.sch-node__handle {
+  width: 7px;
+  height: 7px;
+  background: var(--border);
+  border: 1px solid var(--bg);
+  opacity: 0;
+}
+.sch-node:hover .sch-node__handle,
+.sch-node.is-selected .sch-node__handle { opacity: 1; }
+
+.sch-node__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.sch-node__name {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sch-node__badge {
+  flex-shrink: 0;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+}
+.sch-node__badge--prisma { color: var(--accent); border-color: rgba(79, 142, 247, 0.35); }
+.sch-node__badge--sql { color: var(--warning); border-color: rgba(210, 153, 34, 0.35); }
+.sch-node__badge--mongoose { color: var(--success); border-color: rgba(63, 185, 80, 0.35); }
+
+.sch-node__body { padding: 2px 0; }
+
+.sch-node__row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-3);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.sch-node__key { font-size: 0.6875rem; text-align: center; }
+.sch-node__field {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sch-node__type {
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+.sch-node__flags { display: flex; gap: 2px; justify-content: flex-end; }
+.sch-node__flag {
+  font-size: 0.5625rem;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 2px;
+  cursor: default;
+}
+.sch-node__flag--fk { color: var(--accent); background: var(--accent-muted); }
+.sch-node__flag--uq { color: var(--accent); background: var(--accent-muted); }
+.sch-node__flag--req { color: var(--text-secondary); background: var(--surface-secondary); }
+.sch-node__flag--rel { color: var(--success); background: var(--success-muted); }
+.sch-node__more {
+  padding: 2px var(--space-3);
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.6875rem;
+}
+
+.sch-node__footer {
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-secondary);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+
+/* Relationship edges: solid for explicit, dashed for inferred/unknown
+   (spec section 8). Labels get an opaque background via React Flow's own
+   labelBgStyle prop so lines never run through the text. */
+.sch-edge.sch-edge--explicit .react-flow__edge-path { stroke: var(--border); stroke-width: 1.5px; }
+.sch-edge.sch-edge--inferred .react-flow__edge-path {
+  stroke: var(--text-secondary);
+  stroke-width: 1.25px;
+  stroke-dasharray: 6 4;
+}
+.sch-edge.sch-edge--unknown .react-flow__edge-path {
+  stroke: var(--text-muted);
+  stroke-width: 1px;
+  stroke-dasharray: 3 4;
+}
+.sch-edge.is-active .react-flow__edge-path { stroke: var(--accent) !important; stroke-width: 2.25px !important; }
+
+.sch-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+.sch-table th, .sch-table td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+.sch-table th { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.02em; }

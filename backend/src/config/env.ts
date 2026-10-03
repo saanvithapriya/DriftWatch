@@ -2,9 +2,103 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+/** Reads a positive integer from the environment, falling back when unusable. */
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Configuration errors are reported at startup, naming the variable and the
+ * offending value.
+ *
+ * Without this a bad PORT surfaced as a bare RangeError from `listen()`, and a
+ * malformed FRONTEND_URL surfaced much later as a 500 from the auth callback —
+ * both a long way from the actual mistake.
+ */
+export function readPort(raw: string | undefined, fallback = 5000): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(
+      `PORT must be an integer between 1 and 65535, but is ${JSON.stringify(raw)}`
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Path the backend serves the GitHub authorization callback on.
+ *
+ * Declared here so the default callback URL cannot drift from the route that
+ * actually exists; a test asserts the app really serves this path.
+ */
+export const GITHUB_CALLBACK_PATH = "/api/auth/github/callback";
+
+/**
+ * Callback URL registered with the GitHub App.
+ *
+ * Defaults to this backend's own local address so a developer does not have to
+ * restate something the route already determines. It must still be set
+ * explicitly for any non-local deployment, and it must match the callback URL
+ * configured in the GitHub App — GitHub rejects a mismatched redirect_uri, so
+ * a wrong value fails loudly rather than silently.
+ */
+export function readGithubCallbackUrl(
+  raw: string | undefined,
+  port: number
+): string {
+  if (raw === undefined || raw.trim() === "") {
+    return `http://localhost:${port}${GITHUB_CALLBACK_PATH}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `GITHUB_APP_CALLBACK_URL must be an absolute http(s) URL, but is ${JSON.stringify(raw)}`
+    );
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `GITHUB_APP_CALLBACK_URL must use http or https, but is ${JSON.stringify(raw)}`
+    );
+  }
+
+  return parsed.toString();
+}
+
+export function readFrontendUrl(
+  raw: string | undefined,
+  fallback = "http://localhost:5173"
+): string {
+  if (raw === undefined || raw.trim() === "") return fallback;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `FRONTEND_URL must be an absolute http(s) URL, but is ${JSON.stringify(raw)}`
+    );
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `FRONTEND_URL must use http or https, but is ${JSON.stringify(raw)}`
+    );
+  }
+
+  // Trailing slashes break an exact CORS origin comparison.
+  return parsed.origin;
+}
+
 export const env = {
-  port: Number(process.env.PORT) || 5000,
-  frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
+  port: readPort(process.env.PORT),
+  frontendUrl: readFrontendUrl(process.env.FRONTEND_URL),
   /**
    * Optional. Public repository ingestion works without it; when set, it only
    * raises the GitHub API rate limit. Users are never asked to supply a token.
@@ -24,11 +118,76 @@ export const env = {
   githubApp: {
     clientId: process.env.GITHUB_APP_CLIENT_ID || undefined,
     clientSecret: process.env.GITHUB_APP_CLIENT_SECRET || undefined,
-    callbackUrl: process.env.GITHUB_APP_CALLBACK_URL || undefined,
+    /**
+     * Always present: it falls back to this backend's own callback address, so
+     * only the two credentials actually have to be supplied.
+     */
+    callbackUrl: readGithubCallbackUrl(
+      process.env.GITHUB_APP_CALLBACK_URL,
+      readPort(process.env.PORT)
+    ),
   },
   /**
    * Set to "true" when the backend is served over HTTPS so the session cookie
    * carries the Secure attribute. Left false for local http://localhost.
    */
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === "true",
+  /**
+   * Bounds on Phase 4 dependency analysis. They protect backend memory,
+   * GitHub API usage, parsing time and the size of the graph the browser has
+   * to handle. Reaching one produces a partial, clearly-flagged analysis
+   * rather than a failure.
+   */
+  analysis: {
+    /** Source files parsed per repository. */
+    maxSourceFiles: positiveInt(process.env.DRIFTWATCH_MAX_SOURCE_FILES, 600),
+    /** Largest single file read from the archive (512 KB). */
+    maxFileSizeBytes: positiveInt(
+      process.env.DRIFTWATCH_MAX_FILE_SIZE_BYTES,
+      512 * 1024
+    ),
+    /** Total source held in memory for one analysis (24 MB). */
+    maxTotalSourceBytes: positiveInt(
+      process.env.DRIFTWATCH_MAX_TOTAL_SOURCE_BYTES,
+      24 * 1024 * 1024
+    ),
+    /**
+     * Repositories larger than this are refused before the archive is
+     * downloaded (250 MB), since the download itself would be the bottleneck.
+     */
+    maxRepositorySizeKb: positiveInt(
+      process.env.DRIFTWATCH_MAX_REPO_SIZE_KB,
+      250 * 1024
+    ),
+  },
+  /**
+   * Bounds on Phase 5 workflow analysis. Reaching one produces a partial,
+   * clearly-flagged result rather than a failure.
+   */
+  workflows: {
+    /** Workflow files parsed per repository. */
+    maxWorkflows: positiveInt(process.env.DRIFTWATCH_MAX_WORKFLOWS, 50),
+    /** Jobs kept per workflow. */
+    maxJobsPerWorkflow: positiveInt(
+      process.env.DRIFTWATCH_MAX_JOBS_PER_WORKFLOW,
+      100
+    ),
+    /** Steps kept per job. */
+    maxStepsPerJob: positiveInt(process.env.DRIFTWATCH_MAX_STEPS_PER_JOB, 100),
+  },
+  /**
+   * Bounds on Phase 7 git history and impact analysis. Reaching one produces
+   * a partial, clearly-flagged result rather than a failure or an unbounded
+   * GitHub/traversal cost.
+   */
+  history: {
+    /** Commits returned per history page, and the hard ceiling on `perPage`. */
+    maxHistoryCommits: positiveInt(process.env.DRIFTWATCH_MAX_HISTORY_COMMITS, 100),
+    /** Files kept in one commit's or comparison's file list. */
+    maxCommitFiles: positiveInt(process.env.DRIFTWATCH_MAX_COMMIT_FILES, 300),
+    /** Files (changed + affected) kept in one impact graph. */
+    maxImpactFiles: positiveInt(process.env.DRIFTWATCH_MAX_IMPACT_FILES, 200),
+    /** Reverse-dependency hops traversed from a changed file. */
+    maxImpactDepth: positiveInt(process.env.DRIFTWATCH_MAX_IMPACT_DEPTH, 5),
+  },
 };

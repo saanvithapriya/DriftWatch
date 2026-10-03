@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/utils/githubUrl.test.ts && tsx src/services/githubService.test.ts && tsx src/config/octokit.test.ts && tsx src/auth/auth.test.ts && tsx src/auth/authHttp.test.ts"
+    "test": "tsx src/config/env.test.ts && tsx src/utils/githubUrl.test.ts && tsx src/services/githubService.test.ts && tsx src/config/octokit.test.ts && tsx src/auth/auth.test.ts && tsx src/auth/authHttp.test.ts && tsx src/auth/concurrency.test.ts && tsx src/parser/dependencyExtractor.test.ts && tsx src/parser/dependencyResolver.test.ts && tsx src/parser/dependencyGraph.test.ts && tsx src/parser/parserHardening.test.ts && tsx src/controllers/dependencyHttp.test.ts && tsx src/controllers/httpHardening.test.ts && tsx src/workflows/workflowParser.test.ts && tsx src/controllers/workflowHttp.test.ts && tsx src/auth/authConfig.test.ts && tsx src/auth/authConfigured.test.ts && tsx src/auth/authPartial.test.ts && tsx src/parser/functionExtractor.test.ts && tsx src/parser/callGraphBuilder.test.ts && tsx src/parser/callGraphTraversal.test.ts && tsx src/controllers/callGraphHttp.test.ts && tsx src/services/scopedCache.test.ts && tsx src/services/historyService.test.ts && tsx src/parser/impactTraversal.test.ts && tsx src/controllers/historyHttp.test.ts && tsx src/controllers/impactHttp.test.ts && tsx src/schema/prisma/prismaParser.test.ts && tsx src/schema/sql/sqlParser.test.ts && tsx src/schema/mongoose/mongooseParser.test.ts && tsx src/schema/schemaGraph.test.ts && tsx src/controllers/schemaHttp.test.ts"
   },
   "dependencies": {
     "@octokit/oauth-app": "^8.0.4",
@@ -16,13 +16,19 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
-    "octokit": "^5.0.5"
+    "octokit": "^5.0.5",
+    "tar-stream": "^3.2.1",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-typescript": "^0.23.2",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.1",
+    "@types/tar-stream": "^3.1.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

@@ -10,6 +10,9 @@ import {
   buildFileTree,
   countTreeNodes,
   createRepositoryRoot,
+  findNodeByPath,
+  parentPath,
+  pathSegments,
 } from "./fileTree";
 import { assert, assertEqual, report, test } from "./testHarness";
 
@@ -256,6 +259,94 @@ test("an empty repository root is valid and reports zeroes", () => {
   const root = createRepositoryRoot("owner/repo", buildFileTree([]));
   assertEqual(root.children.length, 0, "no children");
   assertEqual(root.counts.totalFiles, 0, "no files");
+});
+
+test("unicode and special characters in filenames survive intact", () => {
+  const names = [
+    "日本語.ts", "café.ts", "emoji-🎉.ts", "spaces in name.ts",
+    "paren(1).ts", "bracket[0].ts", "brace{x}.ts", "quote'.ts",
+    'double".ts', "hash#.ts", "percent%.ts", "plus+.ts",
+    "amp&.ts", "at@.ts", "dollar$.ts", "tilde~.ts", "semi;.ts",
+  ];
+  const tree = buildFileTree(names.map((n) => file(`src/${n}`)));
+  const src = tree[0];
+  assertEqual(src.name, "src", "parent directory");
+  assertEqual(
+    src.children.map((c) => c.name).sort(),
+    [...names].sort(),
+    "every name preserved byte for byte"
+  );
+  for (const child of src.children) {
+    assertEqual(child.path, `src/${child.name}`, `path kept for ${child.name}`);
+    assertEqual(child.type, "file", "type kept");
+  }
+});
+
+test("exactly duplicated paths collapse into one node", () => {
+  const tree = buildFileTree([
+    file("src/a.ts"), file("src/a.ts"), file("src/a.ts"),
+  ]);
+  assertEqual(tree.length, 1, "one root");
+  assertEqual(tree[0].children.length, 1, "one child, not three");
+  assertEqual(tree[0].counts.totalFiles, 1, "counted once");
+});
+
+test("a path repeated with conflicting types keeps its first classification", () => {
+  const tree = buildFileTree([file("src/thing"), dir("src/thing")]);
+  assertEqual(tree[0].children.length, 1, "one node");
+  assertEqual(tree[0].children[0].type, "file", "first wins, deterministically");
+});
+
+test("odd but legal paths do not break construction", () => {
+  const tree = buildFileTree([
+    file("a//b.ts"),
+    file("./c.ts"),
+    file("d/"),
+    file(""),
+    file("/leading.ts"),
+  ]);
+  const paths: string[] = [];
+  const walk = (nodes: typeof tree): void => {
+    for (const n of nodes) { paths.push(n.path); walk(n.children); }
+  };
+  walk(tree);
+  assert(!paths.includes(""), "no empty path node");
+  for (const p of paths) {
+    assert(!p.startsWith("/"), `no leading slash: ${p}`);
+    assert(!p.includes("//"), `no doubled slash: ${p}`);
+  }
+});
+
+test("a very deep path builds every level without recursion trouble", () => {
+  const depth = 200;
+  const segments = Array.from({ length: depth }, (_, i) => `l${i}`);
+  const tree = buildFileTree([file(`${segments.join("/")}/leaf.ts`)]);
+  let node = tree[0];
+  let levels = 1;
+  while (node.children.length > 0) { node = node.children[0]; levels += 1; }
+  assertEqual(levels, depth + 1, "every level present plus the leaf");
+  assertEqual(node.name, "leaf.ts", "leaf at the bottom");
+});
+
+test("a wide directory keeps every child", () => {
+  const entries = Array.from({ length: 2000 }, (_, i) =>
+    file(`wide/f${String(i).padStart(4, "0")}.ts`)
+  );
+  const tree = buildFileTree(entries);
+  assertEqual(tree[0].children.length, 2000, "all children kept");
+  assertEqual(tree[0].counts.totalFiles, 2000, "counted");
+});
+
+test("navigation helpers handle edge-case paths", () => {
+  const root = createRepositoryRoot("o/r", buildFileTree([file("src/a.ts")]));
+  assertEqual(findNodeByPath(root, ROOT_PATH)?.name, "o/r", "empty path is the root");
+  assertEqual(findNodeByPath(root, "src/")?.name, "src", "trailing slash tolerated");
+  assertEqual(findNodeByPath(root, "/src")?.name, "src", "leading slash tolerated");
+  assertEqual(findNodeByPath(root, "src//a.ts")?.name, "a.ts", "doubled slash tolerated");
+  assertEqual(findNodeByPath(root, "nope"), null, "missing path");
+  assertEqual(parentPath(ROOT_PATH), null, "root has no parent");
+  assertEqual(parentPath("src"), ROOT_PATH, "top level parent is the root");
+  assertEqual(pathSegments(ROOT_PATH), [], "root has no segments");
 });
 
 await report("buildFileTree() / countTreeNodes() tests");

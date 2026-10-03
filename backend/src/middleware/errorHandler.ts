@@ -98,7 +98,9 @@ export function errorHandler(
       message:
         clientError.type === "entity.parse.failed"
           ? "Malformed JSON in request body"
-          : "Invalid request",
+          : clientError.status === 413
+            ? "Request body is too large"
+            : "Invalid request",
     });
     return;
   }

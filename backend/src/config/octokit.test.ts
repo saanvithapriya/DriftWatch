@@ -13,6 +13,7 @@ import {
   getOctokit,
   resetAnonymousOctokit,
   resolveOctokit,
+  throttleOptions,
 } from "./octokit.js";
 import { assert, assertEqual, report, test } from "../testHarness.js";
 
@@ -90,6 +91,19 @@ test("an anonymous request after an authenticated one is still anonymous", async
   const anonymous = resolveOctokit();
   const auth = await authOf(anonymous);
   assert(auth.token !== "ghu_dave", "dave's credential did not leak into the anonymous path");
+});
+
+test("rate limiting is never retried, so a request cannot hang", () => {
+  // Regression: the throttling plugin bundled with `octokit` defaults to
+  // waiting for the rate-limit window to reset and retrying. With the
+  // anonymous limit of 60/hour that made requests hang for many minutes
+  // instead of returning a prompt 429, leaving the UI on a spinner.
+  assertEqual(throttleOptions.onRateLimit(), false, "primary rate limit is not retried");
+  assertEqual(
+    throttleOptions.onSecondaryRateLimit(),
+    false,
+    "secondary rate limit is not retried"
+  );
 });
 
 await report("Octokit credential isolation tests");

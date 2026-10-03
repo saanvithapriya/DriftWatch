@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { env } from "../config/env.js";
 import { AppError } from "../utils/appError.js";
 import { getAuthService, sessionStore } from "./authRuntime.js";
+import { inspectGithubAppConfig } from "./githubApp.js";
 import {
   SESSION_COOKIE_NAME,
   clearSessionCookie,
@@ -25,11 +26,28 @@ export function getAuthStart(
 ): void {
   const auth = getAuthService();
   if (auth === null) {
+    const config = inspectGithubAppConfig();
+
+    if (config.status === "partial") {
+      // The operator has set up half of it — almost always a typo or an
+      // unfinished .env. The missing variable *names* go to the server log
+      // (they are not secrets, but they are nobody else's business); the
+      // client gets a message that distinguishes this from "not set up".
+      console.error(
+        `GitHub sign-in is misconfigured: missing ${config.missing.join(", ")}. ` +
+          "See the GitHub Authentication section of the README."
+      );
+      next(
+        new AppError(
+          503,
+          "GitHub sign-in is misconfigured on this server. Check the server logs."
+        )
+      );
+      return;
+    }
+
     next(
-      new AppError(
-        503,
-        "GitHub sign-in is not configured on this server."
-      )
+      new AppError(503, "GitHub sign-in is not configured on this server.")
     );
     return;
   }
