@@ -175,4 +175,19 @@ export const env = {
     /** Steps kept per job. */
     maxStepsPerJob: positiveInt(process.env.DRIFTWATCH_MAX_STEPS_PER_JOB, 100),
   },
+  /**
+   * Bounds on Phase 7 git history and impact analysis. Reaching one produces
+   * a partial, clearly-flagged result rather than a failure or an unbounded
+   * GitHub/traversal cost.
+   */
+  history: {
+    /** Commits returned per history page, and the hard ceiling on `perPage`. */
+    maxHistoryCommits: positiveInt(process.env.DRIFTWATCH_MAX_HISTORY_COMMITS, 100),
+    /** Files kept in one commit's or comparison's file list. */
+    maxCommitFiles: positiveInt(process.env.DRIFTWATCH_MAX_COMMIT_FILES, 300),
+    /** Files (changed + affected) kept in one impact graph. */
+    maxImpactFiles: positiveInt(process.env.DRIFTWATCH_MAX_IMPACT_FILES, 200),
+    /** Reverse-dependency hops traversed from a changed file. */
+    maxImpactDepth: positiveInt(process.env.DRIFTWATCH_MAX_IMPACT_DEPTH, 5),
+  },
 };

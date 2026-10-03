@@ -2,6 +2,7 @@ import { resolveOctokit } from "../config/octokit.js";
 import { AppError } from "../utils/appError.js";
 import type {
   GithubCredential,
+  RepositoryInfo,
   RepositoryTree,
   RepositoryTreeNode,
 } from "../types/github.js";
@@ -206,4 +207,68 @@ export async function fetchRepositoryTree(
     credential
   );
   return { repository, tree, truncated };
+}
+
+/**
+ * Repository metadata only — one call, no tree.
+ *
+ * Phase 7's history endpoints need the canonical owner/name/defaultBranch for
+ * their response envelopes, but have no use for the (potentially large)
+ * recursive tree `fetchRepositorySnapshot` also fetches. Calling that here
+ * would cost an extra, wasted `git.getTree` request on every history,
+ * commit, compare and file-history call.
+ */
+export async function fetchRepositoryInfo(
+  owner: string,
+  repo: string,
+  credential?: GithubCredential
+): Promise<RepositoryInfo> {
+  const octokit = resolveOctokit(credential);
+
+  try {
+    const { data } = await octokit.rest.repos.get({ owner, repo });
+    return {
+      owner: data.owner.login,
+      name: data.name,
+      defaultBranch: data.default_branch,
+    };
+  } catch (error) {
+    throw toAppError(error);
+  }
+}
+
+/**
+ * Recursive repository tree as of an arbitrary ref/sha — unlike
+ * `fetchRepositorySnapshot`, which always reads the default branch.
+ *
+ * Phase 7's impact analysis needs the dependency graph as it existed at the
+ * comparison's `head` commit, which is not necessarily the default branch.
+ * Reuses the same `git.getTree` call and entry normalization as the
+ * snapshot path; nothing about tree handling is duplicated.
+ */
+export async function fetchTreeAtRef(
+  owner: string,
+  repo: string,
+  ref: string,
+  credential?: GithubCredential
+): Promise<{ tree: RepositoryTreeNode[]; truncated: boolean }> {
+  const octokit = resolveOctokit(credential);
+
+  try {
+    const { data } = await octokit.rest.git.getTree({
+      owner,
+      repo,
+      tree_sha: ref,
+      recursive: "1",
+    });
+
+    return {
+      tree: normalizeTreeEntries(data.tree),
+      truncated: data.truncated === true,
+    };
+  } catch (error) {
+    // A ref that does not exist is the caller's mistake (an invalid sha),
+    // not an upstream failure — surfaced as 404 like everything else here.
+    throw toAppError(error);
+  }
 }
