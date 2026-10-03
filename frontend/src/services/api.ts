@@ -2,10 +2,26 @@ import type { CallGraphAnalysis } from "../types/callGraph";
 import type { DependencyAnalysis } from "../types/dependencies";
 import type { WorkflowAnalysis } from "../types/workflows";
 import type { GithubTreeResponse, RepositoryTree } from "../types/github";
+import type {
+  CommitComparison,
+  CommitDetail,
+  FileHistory,
+  HistoryStats,
+  ImpactAnalysis,
+  RepositoryHistory,
+} from "../types/history";
+import type { SchemaAnalysis } from "../types/schema";
 import {
   parseCallGraphAnalysis,
+  parseCommitComparison,
+  parseCommitDetail,
   parseDependencyAnalysis,
+  parseFileHistory,
+  parseHistoryStats,
+  parseImpactAnalysis,
+  parseRepositoryHistory,
   parseRepositoryTree,
+  parseSchemaAnalysis,
   parseWorkflowAnalysis,
   readErrorMessage,
 } from "./responseContract";
@@ -186,4 +202,122 @@ export async function analyzeCallGraph(
   }
 
   return data;
+}
+
+/**
+ * Shared shape for every Phase 7 endpoint below: POST a JSON body, surface a
+ * non-2xx response as an `ApiError` carrying the backend's own message, and
+ * validate the payload's shape before it ever reaches the UI.
+ */
+async function postAndValidate<T>(
+  path: string,
+  body: Record<string, unknown>,
+  parse: (payload: unknown) => T | null
+): Promise<T> {
+  const response = await request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      readErrorMessage(payload) ?? `Request failed with status ${response.status}`
+    );
+  }
+
+  const envelope = payload as { success?: unknown; data?: unknown } | null;
+  if (envelope === null || envelope.success !== true) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  const data = parse(envelope.data);
+  if (data === null) {
+    throw new Error("Unexpected response from the server");
+  }
+
+  return data;
+}
+
+export interface HistoryQueryParams {
+  page?: number;
+  perPage?: number;
+  author?: string;
+  path?: string;
+  since?: string;
+  until?: string;
+}
+
+/** Phase 7: paginated commit history for a repository. */
+export function fetchCommitHistory(
+  url: string,
+  params: HistoryQueryParams = {}
+): Promise<RepositoryHistory> {
+  return postAndValidate("/api/github/history", { url, ...params }, parseRepositoryHistory);
+}
+
+/** Phase 7: full detail (stats + changed files) for one commit. */
+export function fetchCommitDetail(url: string, sha: string): Promise<CommitDetail> {
+  return postAndValidate("/api/github/commit", { url, sha }, parseCommitDetail);
+}
+
+/** Phase 7: changed files and stats between two commits/refs. */
+export function compareCommits(
+  url: string,
+  base: string,
+  head: string
+): Promise<CommitComparison> {
+  return postAndValidate("/api/github/compare", { url, base, head }, parseCommitComparison);
+}
+
+/** Phase 7: commit history scoped to one file path, plus evolution stats. */
+export function fetchFileHistory(
+  url: string,
+  path: string,
+  params: { page?: number; perPage?: number } = {}
+): Promise<FileHistory> {
+  return postAndValidate("/api/github/file-history", { url, path, ...params }, parseFileHistory);
+}
+
+/**
+ * Phase 7: change hotspots and contributor activity, derived from
+ * inspecting each commit in the given page individually. Noticeably more
+ * expensive than plain history — only called when the user opens that
+ * section, never automatically.
+ */
+export function fetchHistoryStats(
+  url: string,
+  params: HistoryQueryParams = {}
+): Promise<HistoryStats> {
+  return postAndValidate("/api/github/history-stats", { url, ...params }, parseHistoryStats);
+}
+
+/**
+ * Phase 7: static, dependency-graph-based impact analysis between two
+ * commits. Statically inferred from repository history and dependency
+ * relationships — never a prediction of runtime failure.
+ */
+export function analyzeImpact(
+  url: string,
+  base: string,
+  head: string,
+  maxDepth?: number
+): Promise<ImpactAnalysis> {
+  return postAndValidate(
+    "/api/github/impact",
+    maxDepth === undefined ? { url, base, head } : { url, base, head, maxDepth },
+    parseImpactAnalysis
+  );
+}
+
+/**
+ * Phase 8: database schema statically discovered from Prisma/SQL/Mongoose
+ * source files and normalized into one provider-independent graph. Never
+ * connects to or executes against a live database.
+ */
+export function analyzeSchema(url: string): Promise<SchemaAnalysis> {
+  return postAndValidate("/api/github/schema", { url }, parseSchemaAnalysis);
 }

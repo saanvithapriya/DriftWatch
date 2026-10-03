@@ -5,6 +5,10 @@ import { CallFlowExplorer } from "../callgraph/CallFlowExplorer";
 import { useCallGraphAnalysis } from "../callgraph/useCallGraphAnalysis";
 import { DependencyExplorer } from "../dependencies/DependencyExplorer";
 import { useDependencyAnalysis } from "../dependencies/useDependencyAnalysis";
+import { HistoryExplorer } from "../history/HistoryExplorer";
+import { useCommitHistory } from "../history/useCommitHistory";
+import { SchemaExplorer } from "../schema/SchemaExplorer";
+import { useSchemaAnalysis } from "../schema/useSchemaAnalysis";
 import { WorkflowExplorer } from "../workflows/WorkflowExplorer";
 import { useWorkflowAnalysis } from "../workflows/useWorkflowAnalysis";
 import { ApiError, analyzeGithubRepository } from "../services/api";
@@ -16,7 +20,7 @@ import { RepositoryDiagram } from "./RepositoryDiagram";
 import { RepositorySummary } from "./RepositorySummary";
 
 type Status = "idle" | "loading" | "success" | "error";
-type View = "tree" | "diagram" | "dependencies" | "workflows" | "callgraph";
+type View = "tree" | "diagram" | "dependencies" | "workflows" | "callgraph" | "history" | "schema";
 
 export function RepositoryAnalyzer() {
   const { user } = useAuth();
@@ -123,6 +127,13 @@ export function RepositoryAnalyzer() {
     view === "callgraph",
     analysisId
   );
+
+  // Same pattern once more: the Evolution Timeline loads automatically when
+  // the tab opens; everything else inside History (Phase 7) is on demand.
+  const historyState = useCommitHistory(analyzedUrl, view === "history", analysisId);
+
+  // Same pattern again (Phase 8).
+  const schemaState = useSchemaAnalysis(analyzedUrl, view === "schema", analysisId);
 
   const isLoading = status === "loading";
   const hasError = status === "error" && error !== null;
@@ -289,9 +300,53 @@ export function RepositoryAnalyzer() {
               >
                 Call Flow
               </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-history"
+                aria-selected={view === "history"}
+                aria-controls="panel-history"
+                className={`viewtabs__tab${view === "history" ? " is-active" : ""}`}
+                onClick={() => setView("history")}
+              >
+                History
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-schema"
+                aria-selected={view === "schema"}
+                aria-controls="panel-schema"
+                className={`viewtabs__tab${view === "schema" ? " is-active" : ""}`}
+                onClick={() => setView("schema")}
+              >
+                Schema
+              </button>
             </div>
 
-            {view === "callgraph" ? (
+            {view === "schema" ? (
+              <div
+                className="card diagram-card"
+                id="panel-schema"
+                role="tabpanel"
+                aria-labelledby="tab-schema"
+              >
+                <SchemaExplorer state={schemaState} />
+              </div>
+            ) : view === "history" ? (
+              <div
+                className="card diagram-card"
+                id="panel-history"
+                role="tabpanel"
+                aria-labelledby="tab-history"
+              >
+                <HistoryExplorer
+                  repositoryUrl={analyzedUrl}
+                  analysisId={analysisId}
+                  historyState={historyState}
+                />
+              </div>
+            ) : view === "callgraph" ? (
               <div
                 className="card diagram-card"
                 id="panel-callgraph"

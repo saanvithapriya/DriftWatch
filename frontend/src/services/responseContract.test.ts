@@ -10,8 +10,15 @@
 import { assert, assertEqual, report, test } from "../utils/testHarness";
 import {
   parseCallGraphAnalysis,
+  parseCommitComparison,
+  parseCommitDetail,
   parseDependencyAnalysis,
+  parseFileHistory,
+  parseHistoryStats,
+  parseImpactAnalysis,
+  parseRepositoryHistory,
   parseRepositoryTree,
+  parseSchemaAnalysis,
   parseWorkflowAnalysis,
   readErrorMessage,
 } from "./responseContract";
@@ -433,6 +440,392 @@ test("hostile call graph strings pass through as data, never executed", () => {
     "<script>alert(1)</script>",
     "kept verbatim as a string for the Mermaid generator to escape; never interpreted here"
   );
+});
+
+// ── git history (Phase 7) ────────────────────────────────────────────────
+
+const AUTHOR = { name: "Ada", email: "ada@example.com", login: "ada", avatarUrl: null };
+const COMMIT = {
+  sha: "a".repeat(40),
+  shortSha: "aaaaaaa",
+  message: "fix: a bug",
+  author: AUTHOR,
+  committer: AUTHOR,
+  date: "2024-01-01T00:00:00Z",
+  url: "https://github.com/o/r/commit/a",
+};
+const CHANGED_FILE = {
+  path: "a.ts",
+  status: "modified",
+  additions: 1,
+  deletions: 1,
+  changes: 2,
+  previousPath: null,
+  patchAvailable: true,
+};
+const COMMIT_STATS = { filesChanged: 1, additions: 1, deletions: 1 };
+const PAGINATION = { page: 1, perPage: 30, hasNextPage: false };
+
+test("a well-formed repository history is accepted", () => {
+  const payload = { repository: REPO, commits: [COMMIT], pagination: PAGINATION };
+  assert(parseRepositoryHistory(payload) !== null, "accepted");
+});
+
+test("an empty commit list is valid", () => {
+  assert(parseRepositoryHistory({ repository: REPO, commits: [], pagination: PAGINATION }) !== null, "accepted");
+});
+
+test("malformed repository histories are rejected", () => {
+  const bad: unknown[] = [
+    null,
+    {},
+    { repository: REPO, commits: [COMMIT] },
+    { repository: REPO, commits: "nope", pagination: PAGINATION },
+    { repository: REPO, commits: [{ ...COMMIT, sha: undefined }], pagination: PAGINATION },
+    { repository: REPO, commits: [{ ...COMMIT, author: null }], pagination: PAGINATION },
+    { repository: REPO, commits: [COMMIT], pagination: { page: "1", perPage: 30, hasNextPage: false } },
+  ];
+  for (const payload of bad) {
+    assertEqual(parseRepositoryHistory(payload), null, `rejected: ${JSON.stringify(payload) ?? "undefined"}`);
+  }
+});
+
+test("a commit not linked to a GitHub account (null login/avatar) is still valid", () => {
+  const payload = {
+    repository: REPO,
+    commits: [{ ...COMMIT, author: { ...AUTHOR, login: null, avatarUrl: null } }],
+    pagination: PAGINATION,
+  };
+  assert(parseRepositoryHistory(payload) !== null, "accepted");
+});
+
+test("a well-formed commit detail is accepted", () => {
+  const payload = { commit: COMMIT, stats: COMMIT_STATS, files: [CHANGED_FILE], filesTruncated: false };
+  assert(parseCommitDetail(payload) !== null, "accepted");
+});
+
+test("an unrecognised changed-file status is rejected rather than guessed", () => {
+  const payload = {
+    commit: COMMIT,
+    stats: COMMIT_STATS,
+    files: [{ ...CHANGED_FILE, status: "exploded" }],
+    filesTruncated: false,
+  };
+  assertEqual(parseCommitDetail(payload), null, "rejected");
+});
+
+test("a renamed file (previousPath set) is valid", () => {
+  const payload = {
+    commit: COMMIT,
+    stats: COMMIT_STATS,
+    files: [{ ...CHANGED_FILE, status: "renamed", previousPath: "old.ts" }],
+    filesTruncated: false,
+  };
+  assert(parseCommitDetail(payload) !== null, "accepted");
+});
+
+test("a well-formed commit comparison is accepted", () => {
+  const payload = {
+    repository: REPO,
+    base: COMMIT,
+    head: { ...COMMIT, sha: "b".repeat(40) },
+    stats: COMMIT_STATS,
+    files: [CHANGED_FILE],
+    filesTruncated: false,
+  };
+  assert(parseCommitComparison(payload) !== null, "accepted");
+});
+
+test("malformed commit comparisons are rejected", () => {
+  const bad: unknown[] = [
+    null,
+    { repository: REPO, base: COMMIT },
+    { repository: REPO, base: COMMIT, head: "not an object", stats: COMMIT_STATS, files: [], filesTruncated: false },
+  ];
+  for (const payload of bad) {
+    assertEqual(parseCommitComparison(payload), null, `rejected: ${JSON.stringify(payload) ?? "undefined"}`);
+  }
+});
+
+const FILE_HISTORY_STATS = { totalCommits: 1, activeAuthors: 1, averageChangesPerCommit: null, recentChangeRate: 0 };
+
+test("a well-formed file history, with additions/deletions omitted, is accepted", () => {
+  const payload = {
+    repository: REPO,
+    path: "a.ts",
+    entries: [{ sha: COMMIT.sha, shortSha: COMMIT.shortSha, date: COMMIT.date, message: COMMIT.message, author: AUTHOR }],
+    pagination: PAGINATION,
+    stats: FILE_HISTORY_STATS,
+  };
+  assert(parseFileHistory(payload) !== null, "accepted — a null averageChangesPerCommit is not an error");
+});
+
+test("a file history entry's additions/deletions, when present, must be numbers", () => {
+  const payload = {
+    repository: REPO,
+    path: "a.ts",
+    entries: [{ sha: "a", shortSha: "a", date: COMMIT.date, message: "m", author: AUTHOR, additions: "one" }],
+    pagination: PAGINATION,
+    stats: FILE_HISTORY_STATS,
+  };
+  assertEqual(parseFileHistory(payload), null, "rejected");
+});
+
+test("a well-formed history-stats payload is accepted", () => {
+  const payload = {
+    repository: REPO,
+    hotspots: [{ path: "a.ts", commits: 3, additions: 10, deletions: 2 }],
+    contributors: [{ name: "Ada", login: "ada", commits: 3, filesChanged: 5, additions: 10, deletions: 2 }],
+    commitsAnalyzed: 3,
+    truncated: false,
+  };
+  assert(parseHistoryStats(payload) !== null, "accepted");
+});
+
+test("a contributor with no linked GitHub account (null login) is valid", () => {
+  const payload = {
+    repository: REPO,
+    hotspots: [],
+    contributors: [{ name: "Ada", login: null, commits: 1, filesChanged: 1, additions: 1, deletions: 0 }],
+    commitsAnalyzed: 1,
+    truncated: false,
+  };
+  assert(parseHistoryStats(payload) !== null, "accepted");
+});
+
+const IMPACT_NODE = { id: "a.ts", path: "a.ts", relationship: "changed", depth: 0 };
+const IMPACT_STATS = { changedFiles: 1, affectedFiles: 0, maxDepth: 0 };
+const FUNCTION_IMPACT = { available: false, changedFunctions: [], affectedFunctions: [] };
+
+test("a well-formed impact analysis is accepted", () => {
+  const payload = {
+    repository: REPO,
+    comparison: { base: "a", head: "b" },
+    changedFiles: ["a.ts"],
+    affectedFiles: [],
+    nodes: [IMPACT_NODE],
+    edges: [],
+    stats: IMPACT_STATS,
+    functionImpact: FUNCTION_IMPACT,
+    warnings: [],
+    truncated: false,
+  };
+  assert(parseImpactAnalysis(payload) !== null, "accepted");
+});
+
+test("an unrecognised relationship value is rejected rather than guessed", () => {
+  const payload = {
+    repository: REPO,
+    comparison: { base: "a", head: "b" },
+    changedFiles: ["a.ts"],
+    affectedFiles: [],
+    nodes: [{ ...IMPACT_NODE, relationship: "definitely-broken" }],
+    edges: [],
+    stats: IMPACT_STATS,
+    functionImpact: FUNCTION_IMPACT,
+    warnings: [],
+    truncated: false,
+  };
+  assertEqual(parseImpactAnalysis(payload), null, "rejected");
+});
+
+test("a truncationReason is accepted when present", () => {
+  const payload = {
+    repository: REPO,
+    comparison: { base: "a", head: "b" },
+    changedFiles: ["a.ts"],
+    affectedFiles: [],
+    nodes: [IMPACT_NODE],
+    edges: [],
+    stats: IMPACT_STATS,
+    functionImpact: FUNCTION_IMPACT,
+    warnings: ["Impact analysis is based on statically resolved dependencies and may not capture dynamic runtime relationships."],
+    truncated: true,
+    truncationReason: "max_depth",
+  };
+  assert(parseImpactAnalysis(payload) !== null, "accepted");
+});
+
+test("hostile paths and commit messages in history payloads pass through as data, never executed", () => {
+  const payload = {
+    repository: REPO,
+    comparison: { base: "a", head: "b" },
+    changedFiles: ['"; sequenceDiagram\nactor Evil'],
+    affectedFiles: [],
+    nodes: [{ ...IMPACT_NODE, id: "../../etc/passwd", path: "../../etc/passwd" }],
+    edges: [],
+    stats: IMPACT_STATS,
+    functionImpact: FUNCTION_IMPACT,
+    warnings: [],
+    truncated: false,
+  };
+  const parsed = parseImpactAnalysis(payload);
+  assert(parsed !== null, "accepted as data");
+  assertEqual(parsed?.nodes[0].path, "../../etc/passwd", "kept verbatim, never resolved against a filesystem");
+});
+
+// ── database schema (Phase 8) ────────────────────────────────────────────
+
+const SCHEMA_FIELD = {
+  id: "User.id",
+  name: "id",
+  type: "Int",
+  nullable: false,
+  primaryKey: true,
+  unique: false,
+  array: false,
+};
+const SCHEMA_MODEL = {
+  id: "prisma:schema.prisma:User",
+  name: "User",
+  sourceType: "prisma",
+  sourcePath: "schema.prisma",
+  fields: [SCHEMA_FIELD],
+  indexes: [],
+};
+const SCHEMA_RELATIONSHIP = {
+  id: "User->Post",
+  sourceModel: "User",
+  targetModel: "Post",
+  cardinality: "1:N",
+  inferred: false,
+};
+const SCHEMA_STATS = {
+  models: 1,
+  fields: 1,
+  relationships: 0,
+  primaryKeys: 1,
+  foreignKeys: 0,
+  indexes: 0,
+  byProvider: { prisma: 1 },
+};
+
+test("a well-formed schema analysis is accepted", () => {
+  const payload = {
+    repository: REPO,
+    providers: ["prisma"],
+    schemas: [SCHEMA_MODEL],
+    relationships: [],
+    nodes: [{ id: SCHEMA_MODEL.id, model: SCHEMA_MODEL }],
+    edges: [],
+    stats: SCHEMA_STATS,
+    warnings: [],
+    truncated: false,
+  };
+  assert(parseSchemaAnalysis(payload) !== null, "accepted");
+});
+
+test("a repository with no detected schema is valid", () => {
+  const payload = {
+    repository: REPO,
+    providers: [],
+    schemas: [],
+    relationships: [],
+    nodes: [],
+    edges: [],
+    stats: { ...SCHEMA_STATS, models: 0, fields: 0, primaryKeys: 0, byProvider: {} },
+    warnings: ["No supported database schema definitions were detected."],
+    truncated: false,
+  };
+  assert(parseSchemaAnalysis(payload) !== null, "accepted — absence of a schema is not an error");
+});
+
+test("an unrecognised sourceType is rejected rather than guessed", () => {
+  const payload = {
+    repository: REPO,
+    providers: ["prisma"],
+    schemas: [{ ...SCHEMA_MODEL, sourceType: "graphql" }],
+    relationships: [],
+    nodes: [],
+    edges: [],
+    stats: SCHEMA_STATS,
+    warnings: [],
+    truncated: false,
+  };
+  assertEqual(parseSchemaAnalysis(payload), null, "rejected");
+});
+
+test("an unrecognised cardinality is rejected rather than guessed", () => {
+  const payload = {
+    repository: REPO,
+    providers: ["prisma"],
+    schemas: [SCHEMA_MODEL],
+    relationships: [{ ...SCHEMA_RELATIONSHIP, cardinality: "many-to-many-ish" }],
+    nodes: [],
+    edges: [],
+    stats: SCHEMA_STATS,
+    warnings: [],
+    truncated: false,
+  };
+  assertEqual(parseSchemaAnalysis(payload), null, "rejected");
+});
+
+test("malformed schema analyses are all rejected", () => {
+  const good = {
+    repository: REPO,
+    providers: ["prisma"],
+    schemas: [SCHEMA_MODEL],
+    relationships: [SCHEMA_RELATIONSHIP],
+    nodes: [{ id: SCHEMA_MODEL.id, model: SCHEMA_MODEL }],
+    edges: [{ id: "e1", source: "a", target: "b", relationship: SCHEMA_RELATIONSHIP }],
+    stats: SCHEMA_STATS,
+    warnings: [],
+    truncated: false,
+  };
+  const bad: unknown[] = [
+    null,
+    {},
+    { ...good, repository: undefined },
+    { ...good, schemas: [{ ...SCHEMA_MODEL, fields: undefined }] },
+    { ...good, nodes: [{ id: "x" }] },
+    { ...good, edges: [{ id: "e1", source: "a", target: "b" }] },
+    { ...good, stats: undefined },
+    { ...good, stats: { ...SCHEMA_STATS, models: "1" } },
+    { ...good, truncated: "no" },
+  ];
+  for (const payload of bad) {
+    assertEqual(parseSchemaAnalysis(payload), null, `rejected: ${JSON.stringify(payload) ?? "undefined"}`);
+  }
+});
+
+test("truncated with a reason is accepted", () => {
+  const payload = {
+    repository: REPO,
+    providers: ["prisma"],
+    schemas: [SCHEMA_MODEL],
+    relationships: [],
+    nodes: [{ id: SCHEMA_MODEL.id, model: SCHEMA_MODEL }],
+    edges: [],
+    stats: SCHEMA_STATS,
+    warnings: ["Schema exceeded configured visualization limits."],
+    truncated: true,
+    truncationReason: "max_models",
+  };
+  assert(parseSchemaAnalysis(payload) !== null, "accepted");
+});
+
+test("hostile model and field names pass through as data, never executed", () => {
+  const payload = {
+    repository: REPO,
+    providers: ["prisma"],
+    schemas: [
+      {
+        ...SCHEMA_MODEL,
+        name: "<script>alert(1)</script>",
+        fields: [{ ...SCHEMA_FIELD, name: "'; DROP TABLE users; --" }],
+      },
+    ],
+    relationships: [],
+    nodes: [],
+    edges: [],
+    stats: SCHEMA_STATS,
+    warnings: [],
+    truncated: false,
+  };
+  const parsed = parseSchemaAnalysis(payload);
+  assert(parsed !== null, "accepted as data");
+  assertEqual(parsed?.schemas[0].name, "<script>alert(1)</script>", "kept verbatim, never interpreted");
+  assertEqual(parsed?.schemas[0].fields[0].name, "'; DROP TABLE users; --", "kept verbatim, never executed");
 });
 
 await report("backend response contract tests");

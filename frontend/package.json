@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "test": "tsx src/utils/fileTree.test.ts && tsx src/utils/mermaid.test.ts && tsx src/utils/navigation.test.ts && tsx src/dependencies/graphModel.test.ts && tsx src/services/responseContract.test.ts && tsx src/workflows/workflowMermaid.test.ts && tsx src/callgraph/callGraphMermaid.test.ts"
+    "test": "tsx src/utils/fileTree.test.ts && tsx src/utils/mermaid.test.ts && tsx src/utils/navigation.test.ts && tsx src/dependencies/graphModel.test.ts && tsx src/services/responseContract.test.ts && tsx src/workflows/workflowMermaid.test.ts && tsx src/callgraph/callGraphMermaid.test.ts && tsx src/history/historyModel.test.ts && tsx src/schema/schemaModel.test.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",

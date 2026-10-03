@@ -38,7 +38,20 @@ TypeScript repository and see the statically inferred calls reachable from
 it, as a Mermaid sequence diagram. Call Flow is statically inferred from
 source code and is not runtime tracing.
 
-Git history and persistence do not exist yet — those belong to later phases.
+**Phase 7** adds History: commit history, commit detail, comparing two
+commits, change hotspots, contributor activity, and dependency-aware impact
+analysis — which files are statically reachable from a change, reusing Phase
+4's dependency graph and, optionally, Phase 6's call graph. Impact analysis is
+statically inferred from repository history and dependency relationships; it
+is not runtime failure prediction.
+
+**Phase 8** adds Schema: database schemas statically discovered from Prisma,
+SQL and Mongoose source files, normalized into one provider-independent model
+and drawn as an ER-style React Flow graph. Schema analysis is statically
+inferred from repository source files; DriftWatch does not connect to or
+execute against a live database.
+
+Persistence does not exist yet — that belongs to a later phase.
 
 ## Project Structure
 
@@ -1085,13 +1098,436 @@ are the existing shared ones — nothing is duplicated.
   data-flow analysis, and dynamic calls it cannot prove are reported as
   unresolved rather than guessed.
 
+## Phase 7 — Git History, Evolution & Impact Analysis
+
+Phase 7 lets you inspect how a repository has evolved and understand the
+likely reach of a change — all read through the GitHub REST API. No
+repository is ever cloned, and no `git` command is ever run.
+
+### Commit history and the Evolution Timeline
+
+The **History** tab's Evolution Timeline shows the repository's commits
+newest-first, 30 at a time by default: short SHA, message, author and date.
+Selecting a commit opens **Commit Details** — full SHA, author, date, and
+every changed file with its status (added / modified / removed / renamed /
+copied) and additions/deletions. Clicking a file opens its own **file
+history**: every commit that touched it, plus evolution stats —
+`totalCommits`, `activeAuthors`, a `recentChangeRate` (the fraction of those
+commits from the last 90 days), and `averageChangesPerCommit`. That last
+field is explicitly `null`, never a fabricated number, when per-commit size
+data was not fetched — see Known limitations below.
+
+### Change hotspots and contributor activity
+
+**Change Hotspots** aggregates, over the commits currently loaded, which
+paths changed most often and by how much. **Change hotspots represent
+observed historical change frequency and should not be interpreted as a
+measure of code quality or bug-proneness** — the UI says so directly, not
+only this document. **Contributors** is a plain, descriptive table — commits,
+files changed, additions, deletions per author — deliberately with no
+ranking or "best contributor" score.
+
+Both are more expensive than the plain commit list (GitHub's commit-list API
+carries no file or size information, so each commit on the page is inspected
+individually), so neither loads until you open that section.
+
+### Compare Commits
+
+Enter a base and a head commit/ref and compare them directly: files changed,
+total additions/deletions, and the same changed-file list as Commit Details.
+Uses GitHub's own compare endpoint — the repository's contents are never
+downloaded just to diff two commits.
+
+### Impact analysis
+
+This is Phase 7's core feature: given a comparison, which other files are
+**statically reachable** from what changed.
+
+```
+compare commits → changed files → Phase 4's dependency graph (as of `head`)
+  → reverse-dependency traversal → directly/transitively affected files
+  → optional Phase 6 function-level relationships → the impact graph
+```
+
+The dependency graph is Phase 4's own `buildDependencyGraph`, unmodified —
+Phase 7 does not implement a second import resolver. Its edges (`A` imports
+`B`) are read in reverse: if `B` changes, everything that imports `B` is
+*directly affected*, and everything that imports **those** files is
+*transitively affected*, out to the configured depth. A changed file with no
+node in the dependency graph at all (not a supported source file, or deleted)
+is reported as **unresolved**, not silently treated as having no impact.
+
+> **Impact analysis is statically inferred from repository history and
+> dependency relationships. It is not runtime failure prediction.** This
+> disclaimer is always shown in the Impact Analysis section, and is included
+> in the API response's `warnings` whenever the graph was truncated or any
+> changed file could not be statically resolved.
+
+**Function-level impact** (optional, spec section 14): when the changed files
+contain JavaScript/TypeScript functions, Phase 6's call-graph extraction runs
+on the exact same source already downloaded for the dependency graph — no
+extra GitHub calls. It reports which functions in the changed files have
+statically known callers elsewhere, labelled as **"Function-level analysis
+available"** rather than claiming line-level precision: GitHub's diff data
+does not reliably map to which function a line falls inside, so Phase 7 does
+not attempt that.
+
+The **Impact** view renders the graph with React Flow — the same library
+Phase 4's Dependencies view already uses, laid out with Phase 4's own layered
+layout algorithm — with a path search box, a display-only depth filter, and a
+node-details panel (relationship, depth, change status, dependencies/
+dependents). Nodes are colour-coded: changed (red), directly affected (blue),
+transitively affected (amber), unresolved (dashed).
+
+### Limits
+
+| Limit | Default | Protects |
+| --- | --- | --- |
+| `DRIFTWATCH_MAX_HISTORY_COMMITS` | 100 | the hard ceiling on `perPage` for any history request |
+| `DRIFTWATCH_MAX_COMMIT_FILES` | 300 | files kept in one commit's or comparison's file list |
+| `DRIFTWATCH_MAX_IMPACT_FILES` | 200 | files (changed + affected) kept in one impact graph |
+| `DRIFTWATCH_MAX_IMPACT_DEPTH` | 5 | reverse-dependency hops traversed from a changed file |
+
+Reaching a limit always produces `truncated: true` with a `truncationReason`
+(`max_files` or `max_depth`) — never silent — and the UI shows a warning.
+
+### API
+
+| Endpoint | Purpose | GitHub calls |
+| --- | --- | --- |
+| `POST /api/github/history` | paginated commit list | 2 (repo info + `listCommits`) |
+| `POST /api/github/commit` | one commit's full detail | 2 (repo info + `getCommit`) |
+| `POST /api/github/compare` | diff between two refs | 2 (repo info + `compareCommitsWithBasehead`) |
+| `POST /api/github/file-history` | commits touching one path | 2 (repo info + `listCommits` with `path`) |
+| `POST /api/github/history-stats` | hotspots + contributors | 2 + one `getCommit` per commit on the page (bounded by `perPage`, ≤ 100) |
+| `POST /api/github/impact` | dependency-aware impact graph | 1 compare + 1 tree-at-ref + 1 archive download (reuses Phase 4's acquisition) |
+
+```json
+// POST /api/github/impact
+{ "url": "https://github.com/owner/repository", "base": "<sha>", "head": "<sha>", "maxDepth": 3 }
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "repository": { "owner": "…", "name": "…", "defaultBranch": "…" },
+    "comparison": { "base": "…", "head": "…" },
+    "changedFiles": ["src/auth/service.ts"],
+    "affectedFiles": ["src/api/routes.ts", "src/controllers/user.ts"],
+    "nodes": [
+      { "id": "src/auth/service.ts", "path": "src/auth/service.ts", "relationship": "changed", "depth": 0, "changeStatus": "modified" },
+      { "id": "src/api/routes.ts", "path": "src/api/routes.ts", "relationship": "direct", "depth": 1 }
+    ],
+    "edges": [{ "source": "src/api/routes.ts", "target": "src/auth/service.ts" }],
+    "stats": { "changedFiles": 1, "affectedFiles": 1, "maxDepth": 1 },
+    "functionImpact": { "available": true, "changedFunctions": [], "affectedFunctions": [] },
+    "warnings": [],
+    "truncated": false
+  }
+}
+```
+
+URL validation, authentication and the shared error envelope are unchanged
+and reused as-is. A 404/422 from `getCommit` or `compareCommitsWithBasehead`
+is reported as "Commit not found" / "One or both commit references could not
+be found or compared" rather than the generic "GitHub repository not found"
+Phase 1's mapper uses for `repos.get` — a small, additive refinement layered
+on top of the shared error mapper, not a change to it.
+
+### Caching
+
+Every endpoint keeps a short-lived (5-minute), size-bounded, in-memory cache
+on the backend, keyed by the repository **and** by the caller's identity (a
+hash of their credential, or a fixed anonymous marker) — the same pattern
+Phase 6 introduced for the call graph, now shared via `scopedCache.ts` across
+history, commit, compare, file-history, history-stats and impact. A
+credential is never part of a cache key in its raw form, and one user's
+cached result can never be served to another.
+
+The frontend layers its own cache on top: the Evolution Timeline loads
+automatically per `(repository, page, filters)` exactly like Dependencies/
+CI/CD/Call Flow, while Commit Details, Compare, Hotspots/Contributors, File
+History and Impact Analysis are all on-demand — they fetch only when the
+user selects a commit, clicks Compare, opens a section, or clicks Analyze
+Impact, and each keeps its own small per-session cache keyed by sha / path /
+`base...head`, so switching back to an already-viewed commit is instant and
+makes no request. Switching tabs away from History and back makes none
+either.
+
+### Security
+
+Commit messages, author names, branch names and file paths are
+repository-controlled strings. They are rendered as plain React text
+everywhere and are never executed, never passed to a shell, and never used
+to resolve a filesystem path. A base/head ref is validated against a strict
+character set and rejects anything containing `..` before it ever reaches
+GitHub's compare endpoint, both because a real ref never contains `...` (the
+compare endpoint's own separator) and to keep the constructed `base...head`
+string unambiguous. The impact graph uses React Flow, not Mermaid, so no new
+Mermaid-injection surface exists in Phase 7; everywhere Phase 2/5/6's
+`escapeLabel` utility would apply, it is reused, not reimplemented. All
+lookup tables keyed by repository-controlled strings (paths, author
+identities) use `Map`, which is immune to prototype pollution the way a
+plain object literal is not.
+
+### Known limitations
+
+- `FileHistoryEntry.additions`/`.deletions` are omitted (not fabricated as
+  zero) because `GET .../commits?path=...` — the one call this endpoint
+  makes — carries no per-commit size data; getting it would cost one
+  additional GitHub request per commit. `averageChangesPerCommit` is `null`
+  for the same reason. Hotspots and Contributors do fetch real size data,
+  because the user explicitly opts into that cost by opening those sections.
+- Impact analysis inherits Phase 4's import resolution exactly as-is, by
+  design (`do not create a second import resolver`). In particular, explicit
+  `.js`-extension imports in a TypeScript ESM/NodeNext-style codebase
+  (`import { x } from "./utils.js"` where the source file is `utils.ts`) are
+  not resolved to their `.ts` file by Phase 4's resolver, so such a
+  repository's impact graph will under-report affected files. This is a
+  pre-existing Phase 4 characteristic, observed directly while validating
+  Phase 7 against a real repository using that import style.
+- A renamed file is tracked as "changed" at its new path; dependents are
+  discovered only via the dependency graph at `head`, not retroactively via
+  the file's previous path.
+- Function-level impact reports direct callers only, one hop, never a
+  multi-level call-graph traversal — intentionally shallow, matching the
+  spec's "Function-level analysis available" rather than exact-impact framing.
+- GitHub's own undocumented internal truncation of very large diffs (rather
+  than DriftWatch's own `maxCommitFiles` cap) cannot be detected separately
+  from an ordinary, complete, small file list.
+
+## Phase 8 — Database Schema Visualizer
+
+Schema statically discovers database schemas from repository source — Prisma,
+SQL and Mongoose — and draws them as an interactive, ER-style React Flow
+graph: one box per model/table, with its fields, keys and relationships.
+
+> **Schema analysis is statically inferred from repository source files.
+> DriftWatch does not connect to or execute against a live database.** No
+> `.prisma` file is ever handed to the Prisma CLI, no SQL statement is ever
+> executed, and no `mongoose.connect()` call is ever made — every fact here
+> comes from reading text and, for Mongoose, the same Tree-sitter AST Phase 4
+> already builds.
+
+### Supported providers
+
+| Provider | Detected by | Parsed with |
+| --- | --- | --- |
+| **Prisma** | any `*.prisma` file (`schema.prisma`, `prisma/schema.prisma`, nested files) | a hand-written parser over Prisma's own small DSL — there is no Prisma grammar already a dependency here, and the Prisma CLI is never invoked |
+| **SQL** | any `.sql` file | a hand-written parser over `CREATE TABLE` — a practical subset of common DDL, not a full dialect parser for any one database |
+| **Mongoose** | a JS/JSX/TS/TSX file, but *only* when it contains a recognisable `new Schema(...)`/`model(...)` pair — never every JS/TS file in the repository | Phase 4's own Tree-sitter infrastructure (`parseSource`/`detectLanguage`), the same one Phase 4/6 already use |
+
+A repository can contain more than one provider at once (e.g. a Prisma schema
+alongside hand-written migration SQL); each model keeps its own `sourceType`
+and `sourcePath`, and the three are never silently merged just because two
+models happen to share a name — see **Multiple providers** below.
+
+### Unified schema model
+
+Every provider normalizes into the same shape: a `SchemaModel` (name,
+provider, source path, `SchemaField[]`, `SchemaIndex[]`) and a
+`SchemaRelationship` (source/target model, cardinality, explicit
+`sourceField`/`targetField`, an optional relation name, and `inferred`). The
+frontend knows only this unified shape — never a Prisma AST node, a SQL
+parse-tree fragment, or a Tree-sitter node.
+
+### Prisma parsing
+
+Comments (`//`, `/* */`) are stripped first, respecting quoted strings (a
+`@default("https://example.com")` keeps its `//`), and a multi-line
+`@relation(\n  fields: [...],\n  references: [...]\n)` is joined before
+field-by-field parsing. Extracted per field: scalar type, `[]`/`?` markers,
+`@id`, `@unique`, `@default(...)`, and `@relation(...)` (fields, references,
+name); extracted per model: `@@id`, `@@unique`, `@@index`. A model this parser
+cannot make sense of is skipped with a warning — the rest of the file is
+still used.
+
+### SQL parsing
+
+Covers `CREATE TABLE` only: inline and table-level `PRIMARY KEY`, `UNIQUE`,
+`NOT NULL`, `DEFAULT`, inline `REFERENCES`, table-level `FOREIGN KEY ...
+REFERENCES`, `CONSTRAINT`-named variants, and `KEY`/`INDEX`. Quoted
+identifiers (`"name"`, `` `name` ``, `[name]`) are unquoted; `--` and `/* */`
+comments are stripped the same way Prisma's are, respecting single-quoted
+string literals. A table this parser cannot make sense of is skipped with a
+warning.
+
+### Mongoose parsing
+
+Recognises `new Schema({...})` / `new mongoose.Schema({...})` (bare or
+namespaced, via `require` or a destructured import) paired with
+`model("Name", schemaRef)` / `mongoose.model("Name", schemaRef)`, including an
+inline schema passed directly as the second argument. Field shapes handled:
+a bare scalar (`name: String`), a `Types.ObjectId`-style member chain,
+detailed options (`{ type, required, unique, default, ref, enum }`), arrays
+of any of those (`[String]`, `[{ type: ObjectId, ref: "Post" }]`), and nested
+subdocuments (an object with no `type` key), which are flattened into
+dotted field names (`profile.bio`) rather than modelled as a separate model.
+A dynamic expression as a field's type (a function call, a variable that
+is not itself resolvable) is left alone, never guessed at.
+
+### Relationship detection
+
+In priority order (spec section 12): explicit relationship metadata (Prisma's
+`@relation`, Mongoose's `ref:`) before an explicit foreign key/reference (SQL's
+`REFERENCES`) before a deterministic ORM relation (Prisma's implicit
+many-to-many) before safe structural inference. A name-based resemblance
+alone (`userId` looking like it means `User`) is never treated as explicit,
+and a relationship is never invented when the syntax is ambiguous — see
+**Explicit vs. inferred** below.
+
+### Explicit vs. inferred, and cardinality
+
+Every relationship carries `inferred: false` when the source syntax
+explicitly declares it (Prisma's `@relation`, SQL's `REFERENCES`, Mongoose's
+`ref:`) — this repository's parsers never currently produce `inferred: true`,
+since every shape they recognise is already explicit; a future, looser
+heuristic (e.g. purely name-based) would be the first to set it. Cardinality
+follows the same no-guessing rule: a Prisma scalar FK field (with
+`@relation(fields:…, references:…)`) is `1:N`, or `1:1` when that field is
+also unique/the primary key; a SQL `REFERENCES` is `1:N`; a Mongoose singular
+`ref:` is `1:N`; a Mongoose **array** of refs is `unknown` unless this
+parser can find nothing that makes it unambiguous — never guessed at as N:M
+or N:1. An implicit Prisma many-to-many (two plain array fields pointing at
+each other, no scalar FK on either side) is `N:M`.
+
+### React Flow / layout
+
+Each model/table is one React Flow node — a plain-HTML/CSS field table
+(header: name + provider; one row per field with its type and PK/UQ flags),
+not Mermaid — laid out with Phase 4's own layered layout algorithm
+(`layoutGraph`, adapted to the schema shape rather than duplicated). The same
+library Phase 4's Dependencies view and Phase 7's Impact view already use;
+no second graph library is introduced. Clicking a node opens a details panel:
+provider, source path, every field with its type/flags, indexes, and this
+model's relationships, each labelled direct/reverse and explicit/inferred.
+
+### Search and filters
+
+Search matches a model's own name or any `Model.field` pair — searching
+"user" finds both the `User` model and an unrelated model's `Post.userId`
+field, per spec section 19's own example. Provider and relationship-
+cardinality filters, and a show/hide-fields toggle, are all applied
+client-side over the already-fetched analysis. None of search, the filters,
+or selecting a node ever issues another GitHub request.
+
+### Limits
+
+| Limit | Default | Protects |
+| --- | --- | --- |
+| `MAX_SCHEMA_MODELS` | 200 | total models/tables kept in one analysis |
+| `MAX_SCHEMA_FIELDS_PER_MODEL` | 100 | fields kept per model |
+| `MAX_SCHEMA_EDGES` | 400 | relationships kept in one graph |
+
+Reaching a limit always produces `truncated: true` with a `truncationReason`
+(`max_models`, `max_fields` or `max_edges`) and a visible warning — never
+silent. Truncation that originates upstream of these caps (GitHub's own tree
+truncation, or the shared `maxSourceFiles` limit leaving some candidate
+schema files unselected) is reported too, with its own explanation, rather
+than left as an unexplained `truncated: true`.
+
+### API
+
+`POST /api/github/schema`
+
+```json
+{ "url": "https://github.com/owner/repository" }
+```
+
+A repository with no detected schema is **not** an error:
+
+```json
+{
+  "success": true,
+  "data": {
+    "repository": { "owner": "…", "name": "…", "defaultBranch": "…" },
+    "providers": [],
+    "schemas": [],
+    "relationships": [],
+    "nodes": [],
+    "edges": [],
+    "stats": { "models": 0, "fields": 0, "relationships": 0, "primaryKeys": 0, "foreignKeys": 0, "indexes": 0, "byProvider": {} },
+    "warnings": ["No supported database schema definitions were detected."],
+    "truncated": false
+  }
+}
+```
+
+URL validation, authentication and the shared error envelope are unchanged
+and reused as-is.
+
+### GitHub request cost
+
+Exactly the three calls Phase 4 already uses for a fresh analysis —
+repository metadata, the recursive tree, one archive download — regardless of
+how many schema files, models or fields a repository has. No schema file is
+ever fetched individually; candidate Prisma/SQL/Mongoose paths are collected
+from the already-fetched tree and their content comes from that same one
+archive.
+
+### Caching
+
+The backend keeps a short-lived (5-minute), size-bounded, in-memory cache
+keyed by the repository **and** by the caller's identity (a hash of their
+credential, or a fixed anonymous marker) — the same `scopedCache.ts` Phase 6
+introduced and Phase 7 already shares. Switching between `All` and a specific
+provider, changing the relationship filter, typing in search, toggling field
+visibility, or selecting a node never triggers a request; switching tabs away
+from Schema and back does not either; a fresh **Analyze Repository** always
+starts a new analysis.
+
+### Security
+
+Model, field, table and index names are repository-controlled strings. They
+are rendered as plain React text everywhere and are never executed — not as
+SQL, not as JavaScript, not against a shell. React Flow node and edge ids are
+always the parser's own deterministic, internally-generated ids
+(`prisma:<path>:<name>`-style), never a raw repository-controlled string
+used directly as a DOM/graph id. The ER graph uses React Flow, not Mermaid,
+so no Mermaid-injection surface exists in Phase 8. Every lookup table keyed
+by a repository-controlled string (model names, field names) uses `Map`,
+which is immune to prototype pollution the way a plain object literal is
+not.
+
+### Known limitations
+
+- Only `CREATE TABLE` is parsed; `ALTER TABLE`, views, and dialect-specific
+  extensions (e.g. Postgres-only syntax) are not modelled.
+- Prisma/SQL relationships resolve against every file of the *same* provider
+  across the whole repository (so a schema split across several `.prisma`
+  files works), but Mongoose relationships resolve by name against whatever
+  Mongoose models were found anywhere in the repository — a `ref:` to a model
+  name that genuinely does not exist anywhere is dropped, with a warning,
+  rather than guessed at.
+- A dynamically generated schema (fields built from a loop, a spread of an
+  external object, a schema factory function) is not modelled — only
+  deterministic, literal AST/text structures are read.
+- Multiple schema sources in one repository may represent different versions
+  or snapshots of the same data model (e.g. a legacy SQL migration alongside
+  a newer Prisma schema); DriftWatch does not attempt to reconcile them, by
+  design — see **Multiple providers**.
+- Relationships marked `inferred: false` reflect what the source code
+  statically and deterministically declares, not runtime database metadata;
+  they should not be interpreted as confirmed, currently-enforced
+  constraints on a live database.
+
+### Multiple providers
+
+A repository may contain a Prisma schema, SQL migrations and Mongoose models
+at once. Models are never merged across providers merely because their
+names match — `sourceType` and `sourcePath` are always preserved, and a
+relationship is only ever resolved against models of its *own* provider (see
+**Security** and **Known limitations**). `providers` in the response lists
+every provider actually detected.
+
 ## Frontend
 
 The home page provides a repository URL field and an **Analyze Repository**
 button. It shows a loading state while fetching, reports errors inline, and on
 success displays the repository name, default branch, and file and directory
-counts, followed by the File Tree, Architecture, Dependencies, CI/CD and Call
-Flow views described above.
+counts, followed by the File Tree, Architecture, Dependencies, CI/CD, Call
+Flow, History and Schema views described above.
 
 
 ## Testing
@@ -1105,10 +1541,15 @@ npm test --workspace=frontend
 This covers the tree builder and its size metadata, the Mermaid generators for
 the architecture, CI/CD and Call Flow diagrams (including ID collisions,
 escaping, the max-node guard and determinism), architecture-view navigation,
-and the dependency graph model (layout, filtering, focus). The backend has its
-own suite for URL parsing, GitHub error mapping, credential isolation, the
-auth flow, Tree-sitter function/call extraction, cross-file call resolution,
-call graph traversal, and workflow and dependency parsing:
+the dependency graph model (layout, filtering, focus), the History view's
+formatting helpers and its impact-graph layout adapter, the Schema view's
+search/filter helpers and its own layout adapter, and response-contract
+validation for every endpoint including Phase 7's and Phase 8's. The backend
+has its own suite for URL parsing, GitHub error mapping, credential
+isolation, the auth flow, Tree-sitter function/call extraction, cross-file
+call resolution, call graph traversal, workflow and dependency parsing, the
+shared scoped cache, git history mapping/validation, impact-graph traversal,
+and the Prisma/SQL/Mongoose schema parsers and graph merging:
 
 ```bash
 npm test --workspace=backend
